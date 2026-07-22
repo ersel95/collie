@@ -66,6 +66,11 @@ enum CollieIntegration {
             environment: plist("CollieEnvironment") ?? "staging"
         )
 
+        // Surface Collie's own status messages (queue/send/config errors). The
+        // troubleshooting guide assumes this output exists — keep it wired, or route it
+        // into your logging library (see the bridge below).
+        config.diagnostics = { print($0) }
+
         // ── Log source (optional but recommended) ────────────────────────────────────
         //
         // Collie is log-source agnostic: map ANY logger's snapshot (Olaf, Netfox,

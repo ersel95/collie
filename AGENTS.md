@@ -18,7 +18,10 @@ Ordered steps — all required:
 
 1. **Add the package:** attach Collie to the host target via SPM.
 2. **Copy the template:** `Integration/CollieIntegration.swift` → into the host project.
-   This file is NOT part of the package; it exists to be copied.
+   This file is NOT part of the package; it exists to be copied. Where to find it:
+   - Package added via Xcode: `~/Library/Developer/Xcode/DerivedData/<App>-*/SourcePackages/checkouts/collie/Integration/CollieIntegration.swift`
+   - Package added via Package.swift: `.build/checkouts/collie/Integration/CollieIntegration.swift`
+   - Or fetch it directly: `https://raw.githubusercontent.com/ersel95/collie/main/Integration/CollieIntegration.swift`
 3. **Provide the keys** (xcconfig → Info.plist chain; values NEVER enter the repo):
    `COLLIE_ENABLED`, `COLLIE_JIRA_BASE_URL`, `COLLIE_JIRA_PAT`,
    `COLLIE_JIRA_PROJECT_KEY`, `COLLIE_JIRA_PARENT_KEY` (the parent task reports are

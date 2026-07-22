@@ -1,13 +1,13 @@
 import Foundation
 
-/// A log entry the host app hands to Collie. Collie has no hard dependency on any
-/// logging library (e.g. Olaf); the host maps its own log snapshot to this type and
-/// provides it via `CollieConfiguration.logSnapshotProvider`.
+/// A log entry the host app hands to Collie. Collie has no dependency on any logging
+/// library; the host maps its own log snapshot to this type and provides it via
+/// `CollieConfiguration.logSnapshotProvider`.
 ///
-/// Example mapping from Olaf:
+/// Example mapping from a host logging library:
 /// ```swift
 /// config.logSnapshotProvider = {
-///     Olaf.snapshot().map {
+///     MyLogger.snapshot().map {
 ///         CollieLogEntry(
 ///             date: $0.date,
 ///             level: $0.level.rawValue,
@@ -19,8 +19,8 @@ import Foundation
 /// }
 /// ```
 ///
-/// Metadata key convention for network entries (same as the Olaf iOS SDK):
-/// `method`, `url`, `status`, `durationMs`, `reqBytes`, `respBytes`, `error`,
+/// Metadata key convention for network entries (used to build the issue's Network
+/// section): `method`, `url`, `status`, `durationMs`, `reqBytes`, `respBytes`, `error`,
 /// `requestBody`, `responseBody`; request headers use the `reqH.` prefix, response
 /// headers the `respH.` prefix. Navigation entries: `screen`, `kind`.
 public struct CollieLogEntry: Codable, Sendable {

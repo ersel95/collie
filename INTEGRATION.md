@@ -36,34 +36,66 @@ Copy the `CollieIntegration.swift` template into your project and call it at app
 CollieIntegration.start()
 ```
 
-## 5. Using it together with Olaf
+## 5. Feeding logs (any source)
 
-There are two connection points (both optional but recommended):
+Collie is **log-source agnostic**: it takes logs through the
+`config.logSnapshotProvider` closure as `[CollieLogEntry]`. Any logger works — Olaf,
+Netfox, Pulse, os_log, or your own. ALL provided entries are uploaded to the Jira issue
+in full as a `collie-logs-*.json` attachment; entries with category `network` /
+`navigation` additionally feed the issue description's Network/Navigation sections.
 
-1. **Log bridge** — to attach a log snapshot to the report:
-   ```swift
-   config.logSnapshotProvider = {
-       Olaf.snapshot().map {
-           CollieLogEntry(date: $0.date, level: $0.level.rawValue,
-                          category: $0.category.rawValue, message: $0.message,
-                          metadata: $0.metadata)
-       }
-   }
-   config.sessionIDProvider = { Olaf.currentSessionID }
-   config.diagnostics = { Olaf.info($0) }
-   ```
-   Whether network entries show up in the issue's Network section depends on the
-   metadata keys (`method`, `url`, `status`, `durationMs`, `error`, `requestBody`,
-   `responseBody`) — Olaf already writes them under these names.
+For the description sections to populate, network entries should carry these metadata
+keys: `method`, `url`, `status`, `durationMs`, `error`, `requestBody`, `responseBody`
+(headers: `reqH.` / `respH.` prefixes); navigation entries: `screen`, `kind`. Entries
+without them still travel in the JSON attachment.
 
-2. **Recursion prevention** — exclude Collie's Jira traffic from Olaf capture:
-   ```swift
-   OlafNetworkConfiguration(
-       excludedURLs: config.captureExclusionFragments + existingList
-   )
-   ```
-   Note: Collie's own `URLSession` carries no capture protocol (primary safeguard);
-   this step is the second safeguard.
+**Olaf quick start** (our apps use Olaf, so this bridge is ready to paste — Olaf already
+writes the metadata keys under the names above):
+
+```swift
+config.logSnapshotProvider = {
+    Olaf.snapshot().map {
+        CollieLogEntry(date: $0.date, level: $0.level.rawValue,
+                       category: $0.category.rawValue, message: $0.message,
+                       metadata: $0.metadata)
+    }
+}
+config.sessionIDProvider = { Olaf.currentSessionID }
+config.diagnostics = { Olaf.info($0) }
+```
+
+**Other sources** (Netfox, Pulse, custom): map each record to `CollieLogEntry`, using
+category `network` for HTTP records and filling the metadata keys above from the
+record's fields.
+
+### Recursion prevention (if your logger captures network traffic)
+
+Exclude Collie's Jira endpoints from your capture tool, e.g. with Olaf:
+
+```swift
+OlafNetworkConfiguration(
+    excludedURLs: config.captureExclusionFragments + existingList
+)
+```
+
+Note: Collie's own `URLSession` carries no capture protocol (primary safeguard); this
+step is the second safeguard.
+
+### Shake conflict & tool switching
+
+Collie activates on shake. If another shake-activated tool is installed (e.g. Olaf's
+log viewer via `OlafUI.install()`), one shake triggers both UIs. Both swizzle
+`UIWindow.motionEnded` and call the previous implementation, so they don't break each
+other technically — but decide who owns the gesture, or wire the logo callbacks so
+testers can hop between the tools:
+
+```swift
+Collie.onLogoTap { OlafUI.present() }   // Collie logo → open the Olaf viewer
+OlafUI.onLogoTap { }                    // Olaf logo → close; Collie opens on the next shake
+```
+
+`Collie.onLogoTap` runs its handler after the Collie UI has fully closed, so presenting
+another tool from it is safe.
 
 ## 6. Offline / VPN behavior
 
@@ -83,10 +115,11 @@ There are two connection points (both optional but recommended):
 
 | Symptom | Cause / fix |
 |---|---|
-| Banner never appears | `COLLIE_ENABLED` is NO/missing, or a required Jira field is blank (fail-closed). Check the `config.diagnostics` output |
+| Banner never appears on shake | `COLLIE_ENABLED` is NO/missing, or a required Jira field is blank (fail-closed). Check the `config.diagnostics` output. In the simulator use Device → Shake (⌃⌘Z) |
 | "PAT is invalid or expired (401)" | Renew the PAT; the token needs permissions in the target project |
 | HTTP 400: "Parent issue not found" etc. | `COLLIE_JIRA_PARENT_KEY` is wrong or in a different project than `projectKey` |
 | HTTP 400: issue type error | `COLLIE_JIRA_SUBTASK_TYPE` doesn't match the actual subtask type name in Jira |
 | Report stuck at "queued" | Is the device on VPN? Try reaching Jira from Safari, then call `flushPendingUploads()` |
 | Attachment missing but issue created | The attachment may have been skipped on a permanent error (e.g. size limit) — check the diagnostics output |
-| Jira traffic visible in the Olaf viewer | Not expected (separate session); still, add `captureExclusionFragments` to the exclude list |
+| Jira traffic visible in your network-capture tool | Not expected (separate session); still, add `captureExclusionFragments` to the exclude list |
+| Network section empty despite logs | The network entries don't carry the expected metadata keys (`method`, `url`, `status`…) — see §5; the full entries are still in the JSON attachment |

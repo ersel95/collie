@@ -78,7 +78,7 @@ public final class BugReportService: @unchecked Sendable {
         }
         let effectiveName = testerName ?? identity.name ?? CollieDeviceIdentity.storedName()
 
-        // The host's log snapshot (e.g. Olaf) — ALL categories, raw entries.
+        // The host's log snapshot — ALL categories, raw entries.
         let entries = configuration.logSnapshotProvider?() ?? []
         let sessionID = configuration.sessionIDProvider?() ?? ""
 

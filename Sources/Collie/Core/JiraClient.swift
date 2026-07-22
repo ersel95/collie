@@ -21,8 +21,8 @@ protocol JiraTransport: Sendable {
 
 /// Direct Jira REST v2 (Server/DC) client.
 ///
-/// - **Its own `URLSession` with `protocolClasses = []`**: the host's network-capture
-///   protocol (e.g. Olaf's) is not injected → Jira traffic is not captured, no recursion.
+/// - **Its own `URLSession` with `protocolClasses = []`**: any network-capture protocol
+///   the host uses is not injected → Jira traffic is not captured, no recursion.
 ///   (Additionally the host adds the Jira base URL to its capture exclude list — double
 ///   safeguard.)
 /// - Auth: `Authorization: Bearer <PAT>` (Jira Server/DC Personal Access Token).

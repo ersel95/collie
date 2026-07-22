@@ -74,14 +74,14 @@ public struct CollieConfiguration: Sendable {
     // MARK: - Host bridges (optional)
 
     /// Closure providing the log snapshot at report time. The host maps its own logs
-    /// (e.g. `Olaf.snapshot()`) to `CollieLogEntry`. When `nil`, reports go without logs.
+    /// to `CollieLogEntry`. When `nil`, reports go without logs.
     public var logSnapshotProvider: (@Sendable () -> [CollieLogEntry])?
 
-    /// Closure providing the current session identifier (e.g. `{ Olaf.currentSessionID }`).
+    /// Closure providing the current session identifier from the host's logging system.
     public var sessionIDProvider: (@Sendable () -> String?)?
 
     /// Collie's own diagnostic messages (queue/send states). The host can forward these
-    /// to its own logging system (e.g. `{ Olaf.info($0) }`).
+    /// to its own logging system.
     public var diagnostics: (@Sendable (String) -> Void)?
 
     public init(
@@ -157,9 +157,9 @@ public struct CollieConfiguration: Sendable {
         url(appending: "/browse/\(issueKey)")
     }
 
-    /// Recursion prevention: the host should add these fragments to its network-capture
-    /// tool's (e.g. Olaf's) `excludedURLs` list. (Collie's own session carries no capture
-    /// protocol to begin with — this is the second safeguard.)
+    /// Recursion prevention: if the host uses a network-capture tool, it should add
+    /// these fragments to that tool's URL exclude list. (Collie's own session carries no
+    /// capture protocol to begin with — this is the second safeguard.)
     public var captureExclusionFragments: [String] {
         var fragments: [String] = []
         if let host = jiraBaseURL.host { fragments.append(host.lowercased()) }

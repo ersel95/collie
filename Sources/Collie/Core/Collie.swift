@@ -18,7 +18,7 @@ import Foundation
 ///     assigneeUsername: "jira.user",
 ///     environment: "staging"
 /// )
-/// config.logSnapshotProvider = { Olaf.snapshot().map { ... } }   // optional
+/// config.logSnapshotProvider = { MyLogger.snapshot().map { ... } }   // optional
 /// Collie.configure(with: config)
 /// ```
 public enum Collie {
@@ -102,6 +102,22 @@ public enum Collie {
     public static func flushPendingUploads() {
         box.service?.flushPendingUploads()
     }
+
+    #if canImport(UIKit)
+    /// Registers a handler for taps on the Collie logo in the report sheet's
+    /// navigation bar.
+    ///
+    /// When a handler is set, the logo becomes a button: tapping it closes the Collie UI
+    /// and invokes the handler **after** the UI has fully closed, so it is safe to
+    /// present another diagnostics tool from the handler. Useful when Collie is
+    /// installed alongside another shake-activated tool: the host wires the two logo
+    /// callbacks to switch between them. Pass `nil` to remove the handler (the logo
+    /// becomes a plain image again).
+    @MainActor
+    public static func onLogoTap(_ handler: (() -> Void)?) {
+        BugReportBanner.shared.logoTapHandler = handler
+    }
+    #endif
 
     // MARK: - Internal helpers
 

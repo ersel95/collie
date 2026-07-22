@@ -19,6 +19,9 @@ struct BugReportSheet: View {
         case cancelled
         case sent(issueKey: String)
         case queued
+        /// The logo in the navigation bar was tapped: close the Collie UI, then invoke
+        /// the host's switch-tool handler.
+        case switchTool
     }
 
     enum SubmitState: Equatable {
@@ -43,6 +46,9 @@ struct BugReportSheet: View {
     @FocusState private var focusedField: Field?
 
     private let requiresName: Bool = !CollieDeviceIdentity.hasStoredName
+    /// Whether the host registered a switch-tool handler (`Collie.onLogoTap`); when it
+    /// did, the nav-bar logo becomes a button.
+    private let hasLogoTapHandler: Bool = BugReportBanner.shared.logoTapHandler != nil
 
     /// Focus order of the visible fields (the name only exists on first use).
     private var fieldOrder: [Field] {
@@ -116,6 +122,9 @@ struct BugReportSheet: View {
             }
             .navigationTitle("Report a Problem")
             .toolbar {
+                ToolbarItem(placement: .principal) {
+                    logoItem
+                }
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel") { onClose(.cancelled) }
                         .disabled(state == .sending)
@@ -139,6 +148,31 @@ struct BugReportSheet: View {
     }
 
     // MARK: - Sections
+
+    /// The Collie logo in the navigation bar. When the host registered a switch-tool
+    /// handler, it becomes a button: tapping it closes the Collie UI and hands off to
+    /// the other tool (the handler runs after the UI has fully closed).
+    @ViewBuilder
+    private var logoItem: some View {
+        let logo = Image(systemName: "pawprint.fill")
+            .resizable()
+            .scaledToFit()
+            .frame(height: 22)
+            .foregroundStyle(.primary)
+        if hasLogoTapHandler {
+            Button {
+                onClose(.switchTool)
+            } label: {
+                logo
+            }
+            .buttonStyle(.plain)
+            .disabled(state == .sending)
+            .accessibilityLabel("Collie — switch tool")
+        } else {
+            logo
+                .accessibilityLabel("Collie")
+        }
+    }
 
     private func previewSection(_ image: UIImage) -> some View {
         VStack(alignment: .leading, spacing: 10) {

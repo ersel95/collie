@@ -1,16 +1,16 @@
 # Collie 🐕
 
-**Take a screenshot → report it → a subtask in Jira.**
+**Shake the device → report it → a subtask in Jira.**
 
-Collie is a bug-reporter SDK for iOS test builds: when a tester takes a screenshot, a
+Collie is a bug-reporter SDK for iOS test builds: when a tester shakes the device, a
 bubble slides in from the bottom ("Want to share it?"), a short form is filled out, and
 the report goes **straight to Jira** — no backend in between. Every report is created as
-a **subtask** under a configured parent task and assigned to a configured person; the
-screenshot and a log JSON are uploaded as attachments to the issue.
+a **subtask** under a configured parent task and assigned to a configured person; a
+screenshot captured at shake time and a log JSON are uploaded as attachments to the issue.
 
 ```
-Tester takes a screenshot
-  → ScreenshotDetector renders the key window (secure fields stay masked)
+Tester shakes the device
+  → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
   → Banner: "Spotted a problem? Want to share it?"
   → [Yes] → Form: "What happened?" / "What was expected?" (+ name on first use)
   → Jira: POST /rest/api/2/issue  (subtask under the parent, assignee from config)
@@ -30,14 +30,18 @@ Tester takes a screenshot
   TTL) and retried with exponential backoff; if the issue was created but an attachment
   was left unfinished, the retry **does not create a duplicate issue** — it resumes from
   the remaining step.
-- **Screenshot safety** — secure text field masks are preserved via
-  `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice in the form;
-  progressive JPEG compression down to the size limit.
+- **Screenshot safety** — the screen is captured at shake time with secure text field
+  masks preserved via `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice
+  in the form; progressive JPEG compression down to the size limit.
 - **Rich issue content** — wiki-markup description: reporter, environment, telemetry,
   navigation timeline, failure-first network summary (top 15), category counts. The raw
   logs travel in full as a JSON attachment.
-- **Logging-library agnostic** — [Olaf](https://github.com/ersel95/olaf) or any other
-  logger connects via the `logSnapshotProvider` closure; there is no dependency.
+- **Log-source agnostic** — feed logs from any logger ([Olaf](https://github.com/ersel95/olaf),
+  Netfox, Pulse, os_log, your own) via the `logSnapshotProvider` closure; Collie has no
+  dependency on any of them. ALL entries travel to Jira in full as a JSON attachment,
+  and network/navigation entries also feed the issue description.
+- **Tool switching** — `Collie.onLogoTap { ... }`: tapping the logo in the report sheet
+  closes the Collie UI and hands off to another diagnostics tool of your choice.
 - **No PII** — telemetry is device-state only (no IP/SSID/location).
 
 ## Installation
@@ -64,7 +68,7 @@ var config = CollieConfiguration(
     environment: "staging"
 )
 
-// Optional: Olaf bridge
+// Optional: feed logs from any source — example with Olaf
 config.logSnapshotProvider = {
     Olaf.snapshot().map {
         CollieLogEntry(date: $0.date, level: $0.level.rawValue,
@@ -92,7 +96,7 @@ See `Integration/CollieIntegration.swift` for a ready-made template, and
 - `enabled` must be `true` only in non-prod builds (via xcconfig).
 - The PAT is the single secret; it is never committed to the repo.
 - Collie's Jira traffic leaves through its own `URLSession` (`protocolClasses = []`) —
-  network-capture tools (Olaf) do not capture this traffic. For an extra safeguard, add
+  network-capture tools do not capture this traffic. For an extra safeguard, add
   `config.captureExclusionFragments` to your capture tool's exclude list.
 
 ## License

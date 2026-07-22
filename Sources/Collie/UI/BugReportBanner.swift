@@ -2,7 +2,7 @@
 import UIKit
 import SwiftUI
 
-/// The bug-reporter UI orchestrator: when a screenshot is detected, shows a bubble from
+/// The bug-reporter UI orchestrator: when the device is shaken, shows a bubble from
 /// the bottom inside a **separate `UIWindow`** (never touching the app's hierarchy);
 /// **Yes** → presents the report sheet; finally shows a "PROJ-123 created" / "Queued"
 /// toast.
@@ -12,9 +12,13 @@ final class BugReportBanner {
     static let shared = BugReportBanner()
 
     private var window: UIWindow?
-    private var screenshotObserver: NSObjectProtocol?
+    private var shakeObserver: NSObjectProtocol?
     private var autoDismissTask: Task<Void, Never>?
     private var pendingScreenshot: UIImage?
+
+    /// Handler for taps on the Collie logo in the report sheet's navigation bar
+    /// (set via `Collie.onLogoTap`). When set, the logo becomes a switch-tool button.
+    var logoTapHandler: (() -> Void)?
 
     /// The banner auto-dismisses after a few seconds without interaction.
     private let autoDismissAfter: TimeInterval = 6
@@ -23,35 +27,37 @@ final class BugReportBanner {
 
     // MARK: - Setup (triggered by Collie.configure)
 
-    /// Installs the screenshot detector + observer. Called **only when the bug-reporter
+    /// Installs the shake detector + observer. Called **only when the bug-reporter
     /// opt-in is on**. Idempotent.
     func install() {
-        guard screenshotObserver == nil else { return }
-        ScreenshotDetector.shared.install()
+        guard shakeObserver == nil else { return }
+        ShakeDetector.install()
         // Start battery monitoring + the network monitor early so the first report has
         // populated telemetry.
         CollieTelemetryCollector.prepare()
-        screenshotObserver = NotificationCenter.default.addObserver(
-            forName: .collieScreenshotCaptured,
+        shakeObserver = NotificationCenter.default.addObserver(
+            forName: .collieShake,
             object: nil,
             queue: .main
-        ) { note in
-            let image = note.object as? UIImage
+        ) { _ in
             MainActor.assumeIsolated {
-                BugReportBanner.shared.handleScreenshot(image)
+                BugReportBanner.shared.handleShake()
             }
         }
     }
 
     // MARK: - Flow
 
-    private func handleScreenshot(_ image: UIImage?) {
+    private func handleShake() {
         // Gate: don't show the banner when the service is absent (opt-in off) or capture
         // is disabled.
         guard Collie.bugReportService?.isCaptureEnabled == true else { return }
         // Don't repeat while a banner/sheet is already visible.
         guard window == nil else { return }
-        pendingScreenshot = image
+        Collie.diag("Shake detected")
+        // Capture the screen at shake time, before the banner window appears (Collie's
+        // own alert-level windows are excluded from the render anyway).
+        pendingScreenshot = ScreenRenderer.renderKeyWindow()
         presentBanner()
     }
 
@@ -124,6 +130,10 @@ final class BugReportBanner {
                             BugReportToast.show("\(issueKey) created")
                         case .queued:
                             BugReportToast.show("Queued — will be sent once a connection is available")
+                        case .switchTool:
+                            // Invoked AFTER the Collie UI has fully closed, so the handler
+                            // can safely present another diagnostics tool.
+                            self?.logoTapHandler?()
                         }
                     }
                 }

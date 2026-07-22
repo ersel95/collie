@@ -1,16 +1,16 @@
 # Collie — Agent Guide
 
-Collie: an SPM bug-reporter package for iOS test builds — screenshot → banner → form →
+Collie: an SPM bug-reporter package for iOS test builds — shake → banner → form →
 a **subtask directly in Jira**. No backend; the device talks to Jira Server/DC REST v2
-with a PAT.
+with a PAT. A screenshot is captured automatically at shake time and attached, together
+with a full log JSON fed from the host's logging library (any source).
 
 ## Where to start, by task
 
 | Task | Read |
 |---|---|
 | **Integrating Collie into a host app** | The "Integration" section below + `INTEGRATION.md` (details and troubleshooting) + `Integration/CollieIntegration.swift` (template to copy) |
-| Developing Collie itself | The "Development" section below + `ROADMAP.md` |
-| Understanding the architecture rationale | The `ROADMAP.md` intro + `Olaf/docs/bug-reporter-summary.md` (the old architecture) |
+| Developing Collie itself | The "Development" section below |
 
 ## Integration (into a host app)
 
@@ -27,16 +27,21 @@ Ordered steps — all required:
    The Info.plist mapping is ready in the comment at the top of the template.
    ⚠️ In release/prod configs `COLLIE_ENABLED` is undefined or `NO`; the PAT lives only
    in non-prod secrets.
-4. **Start:** call `CollieIntegration.start()` at app startup (AFTER Olaf, if Olaf is
-   used).
-5. **Olaf bridge (if the host uses Olaf):** uncomment the block in the template —
-   `logSnapshotProvider` (Olaf.snapshot → CollieLogEntry mapping), `sessionIDProvider`,
-   `diagnostics`; also add `config.captureExclusionFragments` to Olaf's
-   `OlafNetworkConfiguration.excludedURLs` (recursion prevention, 2nd safeguard).
-6. **Verify:**
-   - Take a screenshot in the simulator (⌘S) → the banner must appear; submit the form →
-     a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with `screenshot.jpg` +
-     `collie-logs-*.json` attachments and the correct assignee.
+4. **Start:** call `CollieIntegration.start()` at app startup (after the host's logging
+   library, if logs are fed from one).
+5. **Feed logs (recommended):** Collie is log-source agnostic — map any logger's
+   snapshot (Olaf, Netfox, Pulse, os_log, custom) to `[CollieLogEntry]` via
+   `config.logSnapshotProvider`. A ready-to-paste Olaf bridge is in the template and in
+   `INTEGRATION.md` §5 (our apps use Olaf). If the logger captures network traffic, add
+   `config.captureExclusionFragments` to its URL exclude list (recursion prevention,
+   2nd safeguard).
+6. **Tool switching (optional):** if another shake-activated tool is installed, wire
+   `Collie.onLogoTap { ... }` (runs after the Collie UI fully closes) and the other
+   tool's equivalent so testers can hop between them — see `INTEGRATION.md` §5.
+7. **Verify:**
+   - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear; submit
+     the form → a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with
+     `screenshot.jpg` + `collie-logs-*.json` attachments and the correct assignee.
    - If the banner doesn't appear: check the `config.diagnostics` output — when a
      required field is blank, Collie stays silently off (fail-closed).
    - Corporate Jira is reachable only over VPN; without VPN a submission becomes
@@ -59,8 +64,14 @@ type name).
     a retry never repeats the create (`UploadQueueTests` locks this in).
   - `parent` + `assignee` are set from the config on every issue (a report is always a
     subtask).
-  - The screenshot is rendered with `drawHierarchy(afterScreenUpdates: true)` (the
-    secure-field mask depends on it).
+  - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
+    (the secure-field mask depends on it).
+  - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
+    implementation (it must compose with other tools that swizzle the same selector).
+  - ALL provided log entries are attached to the issue in full (the description may
+    summarize/truncate, the JSON attachment never does).
+  - Core stays log-source agnostic: no logging-library types or names in `Sources/`
+    (concrete bridges live only in docs and the integration template).
   - No PII (IP/SSID/location) is ever added to telemetry.
 - Jira assumption: Server/DC (REST v2, PAT Bearer, `assignee.name`, wiki markup).
   Cloud (v3/ADF) is out of scope; if added, isolate it inside

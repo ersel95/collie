@@ -29,12 +29,13 @@
 //     <key>CollieJiraAssignee</key><string>$(COLLIE_JIRA_ASSIGNEE)</string>
 //     <key>CollieEnvironment</key><string>$(COLLIE_ENVIRONMENT)</string>
 //
-//  3. Call `CollieIntegration.start()` at app startup (AFTER Olaf, if you use Olaf).
+//  3. Call `CollieIntegration.start()` at app startup (after your logging library, if
+//     you feed logs from one).
 //
 
 import Foundation
 import Collie
-// import Olaf   // Uncomment if you use Olaf.
+// import Olaf   // Uncomment if you feed logs from Olaf (see the bridge below).
 
 enum CollieIntegration {
 
@@ -65,10 +66,14 @@ enum CollieIntegration {
             environment: plist("CollieEnvironment") ?? "staging"
         )
 
-        // ── Olaf bridge (optional — uncomment if you use Olaf) ───────────────────────
+        // ── Log source (optional but recommended) ────────────────────────────────────
         //
-        // 1. Log snapshot: all logs at report time are woven into the Jira issue and
-        //    attached as the collie-logs JSON.
+        // Collie is log-source agnostic: map ANY logger's snapshot (Olaf, Netfox,
+        // Pulse, os_log, your own) to [CollieLogEntry]. ALL entries are attached to the
+        // Jira issue as collie-logs JSON; network/navigation entries also feed the
+        // issue description (see the metadata key convention in CollieLogEntry docs).
+        //
+        // Ready-made Olaf bridge — uncomment if your app uses Olaf:
         // config.logSnapshotProvider = {
         //     Olaf.snapshot().map {
         //         CollieLogEntry(
@@ -83,12 +88,19 @@ enum CollieIntegration {
         // config.sessionIDProvider = { Olaf.currentSessionID }
         // config.diagnostics = { Olaf.info($0) }
         //
-        // 2. Recursion prevention: exclude Collie's Jira traffic from Olaf's capture.
-        //    (Collie's own session carries no capture protocol — this is the 2nd safeguard.)
-        //    When starting Olaf network capture:
-        //    OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + [...])
+        // Recursion prevention: if your logger captures network traffic, exclude
+        // Collie's Jira endpoints from its capture. (Collie's own session carries no
+        // capture protocol — this is the 2nd safeguard.) With Olaf:
+        // OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + [...])
 
         Collie.configure(with: config)
+
+        // ── Switching between shake-activated tools (optional) ───────────────────────
+        //
+        // Both Collie and viewer-style tools (e.g. Olaf's log viewer) can react to the
+        // same shake. Wire the logo callbacks so testers can hop between them:
+        // Collie.onLogoTap { OlafUI.present() }         // Collie logo → open Olaf
+        // OlafUI.onLogoTap { /* Collie opens on the next shake */ }
 
         // Suggestion: retry pending (offline/VPN-less) reports on returning to foreground.
         // NotificationCenter.default.addObserver(

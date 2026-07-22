@@ -1,13 +1,10 @@
 import Foundation
 
 /// Builds the Jira issue content (summary + wiki-markup description + fields) from
-/// report data.
-///
-/// Swift port of the One4All panel's `jira-issue.builder.ts`; behavior is preserved:
-/// 250-char summary, wiki escaping (markup-injection prevention), failure-first top-15
-/// requests in the network section, category counts. Differences: `parent` and
-/// `assignee` are always set (every report is created as a subtask under the configured
-/// parent), and a short Telemetry section is added since there is no panel anymore.
+/// report data: 250-char summary, wiki escaping (markup-injection prevention),
+/// failure-first top-15 requests in the network section, category counts, and a short
+/// Telemetry section. `parent` and `assignee` are always set — every report is created
+/// as a subtask under the configured parent.
 enum JiraIssueBuilder {
 
     // MARK: - Input

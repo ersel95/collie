@@ -1,10 +1,27 @@
 # Changelog
 
+## 0.2.0 — 2026-07-22
+
+### Changed
+- **Activation is now shake-based, not screenshot-based.** `ScreenshotDetector`
+  (`userDidTakeScreenshotNotification`) was replaced with `ShakeDetector`, a runtime
+  swizzle of `UIWindow.motionEnded` that posts `.collieShake` and always calls the
+  original implementation (composes with other tools that swizzle the same selector).
+  The screen is now captured at shake time by `ScreenRenderer` (same
+  `drawHierarchy(afterScreenUpdates: true)` secure-field-masked rendering as before)
+  and attached to the report as `screenshot.jpg`.
+- Docs restructured around a log-source-agnostic contract: feed logs from any logger
+  via `logSnapshotProvider` (`INTEGRATION.md` §5 has a ready-to-paste bridge example);
+  simulator verification via Device → Shake (⌃⌘Z).
+
+### Added
+- `Collie.onLogoTap(_:)` — when set, the logo in the report sheet's navigation bar
+  becomes a button: tapping it closes the Collie UI and invokes the handler after the
+  UI has fully closed, enabling hand-off to another shake-activated diagnostics tool.
+
 ## 0.1.0 — 2026-07-22
 
-Initial release. A standalone redevelopment of the bug-reporter mechanism extracted
-from Olaf (see `Olaf/docs/bug-reporter-summary.md`); the backend/frontend pair was
-removed from the flow — reports now go **directly to Jira**.
+Initial release. Reports go **directly to Jira** — no backend in between.
 
 ### Added
 - **Core (UIKit-free):**
@@ -16,10 +33,10 @@ removed from the flow — reports now go **directly to Jira**.
     (`X-Atlassian-Token: no-check`), PAT Bearer auth, its own ephemeral `URLSession`
     (`protocolClasses = []` → no capture recursion), permanent/transient error
     classification (special 401 message, 408/429 transient).
-  - `JiraIssueBuilder` — Swift port of the One4All panel's `jira-issue.builder.ts`:
-    summary (250), wiki escaping, description sections (Reporter/Environment/Telemetry/
-    What happened/What was expected/Navigation/Network/Logs), failure-first top-15
-    network rows, body truncation; `parent` + `assignee` on every issue from the config.
+  - `JiraIssueBuilder` — summary (250), wiki escaping, description sections
+    (Reporter/Environment/Telemetry/What happened/What was expected/Navigation/Network/
+    Logs), failure-first top-15 network rows, body truncation; `parent` + `assignee` on
+    every issue from the config.
   - `UploadQueue` — two-step (create → attachments) disk queue: `issueKey` is written
     to the envelope → retries never create duplicate issues; exponential backoff,
     48-hour TTL, `.completeFileProtection`, resumes from disk after restart.

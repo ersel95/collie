@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.1 — 2026-07-22
+
+### Fixed
+- The integration template now wires `config.diagnostics` by default, so the
+  troubleshooting output exists out of the box (also removes the unused-variable
+  warning the template produced when copied verbatim).
+- `AGENTS.md` documents where to find the integration template after SPM resolution
+  (Xcode DerivedData / `.build` checkouts / raw GitHub URL).
+- The README installation snippet pins the current version.
+
 ## 0.2.0 — 2026-07-22
 
 ### Changed

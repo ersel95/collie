@@ -80,3 +80,8 @@ type name).
   Cloud (v3/ADF) is out of scope; if added, isolate it inside
   `JiraClient`/`JiraIssueBuilder`.
 - Language: all code comments, docs, and commit messages are in English.
+- Releasing: add a `## <version> — <date>` section to `CHANGELOG.md`, commit, then
+  `git tag <version> && git push origin <version>` (plain semver, no `v` prefix).
+  The `Release` workflow (`.github/workflows/release.yml`) runs the tests, builds for
+  the iOS simulator, and publishes the GitHub release with that CHANGELOG section as
+  its notes — it fails if the section is missing.

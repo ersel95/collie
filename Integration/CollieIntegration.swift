@@ -17,6 +17,7 @@
 //     COLLIE_JIRA_PARENT_KEY = PROJ-123
 //     COLLIE_JIRA_SUBTASK_TYPE = Sub-task
 //     COLLIE_JIRA_ASSIGNEE = jira.username
+//     COLLIE_JIRA_LABELS = collie,ios-report        // optional, comma-separated
 //     COLLIE_ENVIRONMENT = staging
 //
 //     // Corresponding Info.plist entries (resolved through Build Settings):
@@ -27,6 +28,7 @@
 //     <key>CollieJiraParentKey</key><string>$(COLLIE_JIRA_PARENT_KEY)</string>
 //     <key>CollieJiraSubtaskType</key><string>$(COLLIE_JIRA_SUBTASK_TYPE)</string>
 //     <key>CollieJiraAssignee</key><string>$(COLLIE_JIRA_ASSIGNEE)</string>
+//     <key>CollieJiraLabels</key><string>$(COLLIE_JIRA_LABELS)</string>
 //     <key>CollieEnvironment</key><string>$(COLLIE_ENVIRONMENT)</string>
 //
 //  3. Call `CollieIntegration.start()` at app startup (after your logging library, if
@@ -63,6 +65,7 @@ enum CollieIntegration {
             parentIssueKey: plist("CollieJiraParentKey") ?? "",
             subtaskIssueType: plist("CollieJiraSubtaskType") ?? "Sub-task",
             assigneeUsername: plist("CollieJiraAssignee") ?? "",
+            defaultLabels: CollieConfiguration.labels(fromCommaSeparated: plist("CollieJiraLabels")),
             environment: plist("CollieEnvironment") ?? "staging"
         )
 
@@ -106,6 +109,9 @@ enum CollieIntegration {
         // same shake. Wire the logo callbacks so testers can hop between them:
         // Collie.onLogoTap { OlafUI.present() }         // Collie logo → open Olaf
         // OlafUI.onLogoTap { /* Collie opens on the next shake */ }
+        //
+        // With onLogoTap wired, a shake opens the report sheet directly (no yes/no
+        // banner); in a Collie-only project the banner is shown first.
 
         // Suggestion: retry pending (offline/VPN-less) reports on returning to foreground.
         // NotificationCenter.default.addObserver(

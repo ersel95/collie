@@ -23,7 +23,8 @@ mapping:
 
 `COLLIE_ENABLED`, `COLLIE_JIRA_BASE_URL`, `COLLIE_JIRA_PAT`, `COLLIE_JIRA_PROJECT_KEY`,
 `COLLIE_JIRA_PARENT_KEY`, `COLLIE_JIRA_SUBTASK_TYPE`, `COLLIE_JIRA_ASSIGNEE`,
-`COLLIE_ENVIRONMENT`
+`COLLIE_JIRA_LABELS` (optional — comma-separated, e.g. `collie,ios-report`; each entry
+becomes a label on the created issue), `COLLIE_ENVIRONMENT`
 
 > ⚠️ `COLLIE_ENABLED` is not defined (or is `NO`) in release/prod xcconfig. Collie is
 > fail-closed: when the key is missing, none of its code runs.
@@ -41,8 +42,10 @@ CollieIntegration.start()
 Collie is **log-source agnostic**: it takes logs through the
 `config.logSnapshotProvider` closure as `[CollieLogEntry]`. Any logger works — Olaf,
 Netfox, Pulse, os_log, or your own. ALL provided entries are uploaded to the Jira issue
-in full as a `collie-logs-*.json` attachment; entries with category `network` /
-`navigation` additionally feed the issue description's Network/Navigation sections.
+in full as a pretty-printed `collie-logs-*.json` attachment; entries with category
+`network` / `navigation` additionally feed the issue description's Network/Navigation
+sections. Collie also inserts one synthetic entry of its own (category `collie`,
+"Collie initialized — <date&time>") at its chronological position in the timeline.
 
 For the description sections to populate, network entries should carry these metadata
 keys: `method`, `url`, `status`, `durationMs`, `error`, `requestBody`, `responseBody`
@@ -96,6 +99,10 @@ OlafUI.onLogoTap { }                    // Olaf logo → close; Collie opens on 
 
 `Collie.onLogoTap` runs its handler after the Collie UI has fully closed, so presenting
 another tool from it is safe.
+
+Wiring `Collie.onLogoTap` also changes shake behavior: the "Spotted a problem?" yes/no
+banner is skipped and the report sheet opens directly. Only a Collie-only project (no
+handler set) keeps the yes/no banner on shake.
 
 ## 6. Offline / VPN behavior
 

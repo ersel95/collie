@@ -11,7 +11,7 @@ screenshot captured at shake time and a log JSON are uploaded as attachments to 
 ```
 Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
-  → Banner: "Spotted a problem? Want to share it?"
+  → Banner: "Spotted a problem? Want to share it?"  (skipped when tool switching is wired)
   → [Yes] → Form: "What happened?" / "What was expected?" (+ name on first use)
   → Jira: POST /rest/api/2/issue  (subtask under the parent, assignee from config)
   →       POST /issue/{key}/attachments  (screenshot.jpg + collie-logs.json)
@@ -33,15 +33,18 @@ Tester shakes the device
 - **Screenshot safety** — the screen is captured at shake time with secure text field
   masks preserved via `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice
   in the form; progressive JPEG compression down to the size limit.
-- **Rich issue content** — wiki-markup description: reporter, environment, telemetry,
-  navigation timeline, failure-first network summary (top 15), category counts. The raw
-  logs travel in full as a JSON attachment.
+- **Rich issue content** — visual wiki-markup description: a Report info table (device
+  shown by its marketing name, e.g. `iPhone 15 Pro`), colored "What happened / expected"
+  panels, telemetry, navigation timeline, failure-first network table (top 15) with
+  red/green status colors, category counts. Summary is `Collie iOS Report - <date&time>`;
+  the raw logs travel in full as a pretty-printed JSON attachment.
 - **Log-source agnostic** — feed logs from any logger ([Olaf](https://github.com/ersel95/olaf),
   Netfox, Pulse, os_log, your own) via the `logSnapshotProvider` closure; Collie has no
   dependency on any of them. ALL entries travel to Jira in full as a JSON attachment,
   and network/navigation entries also feed the issue description.
 - **Tool switching** — `Collie.onLogoTap { ... }`: tapping the logo in the report sheet
-  closes the Collie UI and hands off to another diagnostics tool of your choice.
+  closes the Collie UI and hands off to another diagnostics tool of your choice. With a
+  handler wired, a shake opens the report sheet directly (no yes/no banner).
 - **No PII** — telemetry is device-state only (no IP/SSID/location).
 
 ## Installation

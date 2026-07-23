@@ -26,7 +26,8 @@ Ordered steps — all required:
    `COLLIE_ENABLED`, `COLLIE_JIRA_BASE_URL`, `COLLIE_JIRA_PAT`,
    `COLLIE_JIRA_PROJECT_KEY`, `COLLIE_JIRA_PARENT_KEY` (the parent task reports are
    created under), `COLLIE_JIRA_SUBTASK_TYPE` (the actual subtask type name in Jira),
-   `COLLIE_JIRA_ASSIGNEE` (the user every subtask is assigned to), `COLLIE_ENVIRONMENT`.
+   `COLLIE_JIRA_ASSIGNEE` (the user every subtask is assigned to),
+   `COLLIE_JIRA_LABELS` (optional, comma-separated issue labels), `COLLIE_ENVIRONMENT`.
    The Info.plist mapping is ready in the comment at the top of the template.
    ⚠️ In release/prod configs `COLLIE_ENABLED` is undefined or `NO`; the PAT lives only
    in non-prod secrets.
@@ -41,8 +42,11 @@ Ordered steps — all required:
 6. **Tool switching (optional):** if another shake-activated tool is installed, wire
    `Collie.onLogoTap { ... }` (runs after the Collie UI fully closes) and the other
    tool's equivalent so testers can hop between them — see `INTEGRATION.md` §5.
+   With the handler wired, a shake skips the yes/no banner and opens the report sheet
+   directly; without it (Collie-only project) the banner is shown first.
 7. **Verify:**
-   - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear; submit
+   - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear (the
+     report sheet directly, if `onLogoTap` is wired); submit
      the form → a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with
      `screenshot.jpg` + `collie-logs-*.json` attachments and the correct assignee.
    - If the banner doesn't appear: check the `config.diagnostics` output — when a

@@ -113,6 +113,11 @@ public enum Collie {
     /// installed alongside another shake-activated tool: the host wires the two logo
     /// callbacks to switch between them. Pass `nil` to remove the handler (the logo
     /// becomes a plain image again).
+    ///
+    /// Setting a handler also changes shake behavior: the yes/no banner is skipped and
+    /// the report sheet opens directly (in a multi-tool project the question is
+    /// unnecessary). Without a handler — a Collie-only project — the shake keeps
+    /// showing the yes/no banner first.
     @MainActor
     public static func onLogoTap(_ handler: (() -> Void)?) {
         BugReportBanner.shared.logoTapHandler = handler

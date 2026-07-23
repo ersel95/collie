@@ -1,10 +1,11 @@
 import Foundation
 
 /// Builds the Jira issue content (summary + wiki-markup description + fields) from
-/// report data: 250-char summary, wiki escaping (markup-injection prevention),
-/// failure-first top-15 requests in the network section, category counts, and a short
-/// Telemetry section. `parent` and `assignee` are always set — every report is created
-/// as a subtask under the configured parent.
+/// report data: "Collie iOS Report - <date&time>" summary, visual Server/DC wiki markup
+/// (tables, colored panels, status colors, emoticons), wiki escaping (markup-injection
+/// prevention), failure-first top-15 requests in the network section, and category
+/// counts. `parent` and `assignee` are always set — every report is created as a
+/// subtask under the configured parent.
 enum JiraIssueBuilder {
 
     // MARK: - Input
@@ -17,6 +18,7 @@ enum JiraIssueBuilder {
         let telemetry: CollieTelemetry?
         let sessionID: String
         let capturedAt: Date
+        let collieInitializedAt: Date
         let entries: [CollieLogEntry]
     }
 
@@ -53,8 +55,7 @@ enum JiraIssueBuilder {
         let fields = CreateFields(
             project: KeyField(key: configuration.projectKey),
             issuetype: NameField(name: configuration.subtaskIssueType),
-            summary: makeSummary(appName: configuration.resolvedAppDisplayName,
-                                 whatHappened: context.whatHappened),
+            summary: makeSummary(capturedAt: context.capturedAt),
             description: makeDescription(configuration: configuration, context: context),
             assignee: NameField(name: configuration.assigneeUsername),
             parent: KeyField(key: configuration.parentIssueKey),
@@ -67,16 +68,9 @@ enum JiraIssueBuilder {
 
     // MARK: - Summary
 
-    static func makeSummary(appName: String, whatHappened: String) -> String {
-        let summary = "[\(appName)] \(firstLine(whatHappened))"
-        return String(summary.prefix(250))
-    }
-
-    static func firstLine(_ text: String?) -> String {
-        guard let text else { return "Bug report" }
-        let line = text.split(separator: "\n", omittingEmptySubsequences: false)
-            .first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
-        return line.isEmpty ? "Bug report" : line
+    /// Fixed task-name format: `Collie iOS Report - 23.07.2026 14:31`.
+    static func makeSummary(capturedAt: Date) -> String {
+        "Collie iOS Report - \(dateTimeString(capturedAt, seconds: false))"
     }
 
     // MARK: - Description
@@ -89,23 +83,25 @@ enum JiraIssueBuilder {
         let network = context.entries.filter { $0.category == "network" }.map(NetworkView.init)
         let navigation = context.entries.filter { $0.category == "navigation" }.map(NavigationView.init)
 
+        let reportRows = [
+            row("Reporter", context.testerName ?? "Unknown tester"),
+            row("Device", "\(CollieDeviceModel.marketingName(for: identity.model)) — iOS \(identity.osVersion)"),
+            row("App", "\(configuration.resolvedAppDisplayName) \(CollieDeviceIdentity.appVersion) (build \(CollieDeviceIdentity.appBuild)) — \(configuration.environment)"),
+            row("Locale", identity.locale),
+            row("Session", context.sessionID.isEmpty ? "-" : context.sessionID),
+            row("Captured", dateTimeString(context.capturedAt)),
+            row("Collie initialized", dateTimeString(context.collieInitializedAt))
+        ].joined(separator: "\n")
+
         var sections: [String] = [
-            "h3. Reporter",
-            "* *Name:* \(wikiEscape(context.testerName ?? "Unknown tester"))",
-            "* *Device:* \(wikiEscape(identity.model))",
+            "h3. (i) Report",
+            reportRows,
             "",
-            "h3. Environment",
-            "* *iOS:* \(wikiEscape(identity.osVersion))",
-            "* *App:* \(wikiEscape(CollieDeviceIdentity.appVersion)) (build \(wikiEscape(CollieDeviceIdentity.appBuild)))",
-            "* *Environment:* \(wikiEscape(configuration.environment))",
-            "* *Locale:* \(wikiEscape(identity.locale))",
-            "* *Session:* \(wikiEscape(context.sessionID.isEmpty ? "-" : context.sessionID)) — \(wikiEscape(iso8601(context.capturedAt)))",
+            "h3. (!) What happened?",
+            panel(wikiEscape(context.whatHappened), bgColor: "#FFEBE6", borderColor: "#FFBDAD"),
             "",
-            "h3. What happened?",
-            wikiEscape(context.whatHappened),
-            "",
-            "h3. What was expected?",
-            wikiEscape(context.whatExpected),
+            "h3. (/) What was expected?",
+            panel(wikiEscape(context.whatExpected), bgColor: "#E3FCEF", borderColor: "#ABF5D1"),
             ""
         ]
 
@@ -176,11 +172,11 @@ enum JiraIssueBuilder {
 
     static func formatNavigation(_ nav: [NavigationView]) -> String {
         guard !nav.isEmpty else { return "_No navigation captured_" }
-        return nav.map { n in
-            let kind = n.kind.map { " (\(wikiEscape($0)))" } ?? ""
-            return "* [\(timeString(n.timestamp))] \(wikiEscape(n.screen ?? "unknown"))\(kind)"
-        }
-        .joined(separator: "\n")
+        var lines = ["||Time||Screen||Transition||"]
+        lines.append(contentsOf: nav.map { n in
+            "|\(timeString(n.timestamp))|\(cell(n.screen ?? "unknown"))|\(cell(n.kind ?? "-"))|"
+        })
+        return lines.joined(separator: "\n")
     }
 
     static func formatNetwork(_ network: [NetworkView]) -> String {
@@ -194,27 +190,35 @@ enum JiraIssueBuilder {
         }.map(\.element)
         let top = sorted.prefix(maxNetworkRows)
 
-        let rows = top.map { n -> String in
-            let status = n.status.map(String.init) ?? "-"
+        var lines = ["|| ||Method||URL||Status||Duration||"]
+        lines.append(contentsOf: top.map { n in
+            let icon = n.isFailure ? "(x)" : "(/)"
             let dur = n.durationMs.map { "\($0)ms" } ?? "-"
-            let err = n.error.map { " *ERROR:* \(wikiEscape($0))" } ?? ""
-            var block = "* *\(wikiEscape(n.method ?? "GET"))* \(wikiEscape(n.url ?? "")) → \(status) (\(dur))\(err)"
-            if n.isFailure {
-                if let body = n.requestBody, !body.isEmpty {
-                    block += "\nRequest:\n\(codeBlock(truncate(body)))"
-                }
-                if let body = n.responseBody, !body.isEmpty {
-                    block += "\nResponse:\n\(codeBlock(truncate(body)))"
-                }
+            return "|\(icon)|*\(cell(n.method ?? "GET"))*|\(cell(n.url ?? "-"))|\(statusCell(n))|\(cell(dur))|"
+        })
+
+        // Failing request/response details live below the table ({code} blocks cannot
+        // sit inside table cells).
+        for n in top where n.isFailure {
+            var details: [String] = []
+            if let error = n.error, !error.isEmpty {
+                details.append("{color:#DE350B}\(wikiEscape(error)){color}")
             }
-            return block
+            if let body = n.requestBody, !body.isEmpty {
+                details.append("Request:\n\(codeBlock(truncate(body)))")
+            }
+            if let body = n.responseBody, !body.isEmpty {
+                details.append("Response:\n\(codeBlock(truncate(body)))")
+            }
+            guard !details.isEmpty else { continue }
+            lines.append("\n(x) *\(cell(n.method ?? "GET")) \(cell(n.url ?? "-"))*\n"
+                         + details.joined(separator: "\n"))
         }
-        .joined(separator: "\n")
 
         let more = network.count > top.count
             ? "\n_+\(network.count - top.count) more requests in attached collie-logs JSON_"
             : ""
-        return rows + more
+        return lines.joined(separator: "\n") + more
     }
 
     static func summarizeCategories(_ entries: [CollieLogEntry]) -> String {
@@ -224,13 +228,43 @@ enum JiraIssueBuilder {
             let category = entry.category.isEmpty ? "general" : entry.category
             counts[category, default: 0] += 1
         }
-        let lines = counts
+        var lines = ["||Category||Count||"]
+        lines.append(contentsOf: counts
             .sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
-            .map { "* \(wikiEscape($0.key)): \($0.value)" }
+            .map { "|\(cell($0.key))|\($0.value)|" })
         return lines.joined(separator: "\n") + "\n_Full log set attached as collie-logs JSON_"
     }
 
     // MARK: - Wiki markup helpers
+
+    /// A table cell: escaped, newline-free (a newline would break the row), `-` when
+    /// empty.
+    static func cell(_ value: String?) -> String {
+        let escaped = wikiEscape(value).replacingOccurrences(of: "\n", with: " ")
+        return escaped.isEmpty ? "\\-" : escaped
+    }
+
+    /// A `||Key|value|` table row with a header-style key column. `key` is Collie's own
+    /// literal, never user content.
+    private static func row(_ key: String, _ value: String) -> String {
+        "||\(key)|\(cell(value))|"
+    }
+
+    /// A colored `{panel}` block. `body` must already be wiki-escaped, which also
+    /// prevents user text from closing the panel early (`{` → `\{`).
+    private static func panel(_ body: String, bgColor: String, borderColor: String) -> String {
+        "{panel:bgColor=\(bgColor)|borderColor=\(borderColor)}\n\(body.isEmpty ? "-" : body)\n{panel}"
+    }
+
+    /// Status column: red bold for failures, green for successful responses.
+    private static func statusCell(_ n: NetworkView) -> String {
+        guard let status = n.status else {
+            return n.isFailure ? "{color:#DE350B}*ERR*{color}" : "\\-"
+        }
+        return n.isFailure
+            ? "{color:#DE350B}*\(status)*{color}"
+            : "{color:#00875A}\(status){color}"
+    }
 
     private static let wikiSpecials: Set<Character> = [
         "{", "}", "[", "]", "|", "*", "_", "-", "#", "!", "?", "+", "^", "~"
@@ -263,45 +297,42 @@ enum JiraIssueBuilder {
     // MARK: - Telemetry / time formatting
 
     private static func formatTelemetry(_ t: CollieTelemetry) -> String {
-        var lines: [String] = []
-        var row1: [String] = []
-        if let network = t.networkType { row1.append("*Network:* \(wikiEscape(network))") }
+        var rows: [String] = []
+        if let network = t.networkType { rows.append(row("Network", network)) }
         if let level = t.batteryLevel {
-            let state = t.batteryState.map { " (\(wikiEscape($0)))" } ?? ""
-            row1.append("*Battery:* \(level)%\(state)")
+            let state = t.batteryState.map { " (\($0))" } ?? ""
+            rows.append(row("Battery", "\(level)%\(state)"))
         }
-        if let lowPower = t.lowPowerMode { row1.append("*Low power:* \(lowPower ? "yes" : "no")") }
-        if !row1.isEmpty { lines.append("* " + row1.joined(separator: " · ")) }
-
-        var row2: [String] = []
-        if let thermal = t.thermalState { row2.append("*Thermal:* \(wikiEscape(thermal))") }
-        if let orientation = t.orientation { row2.append("*Orientation:* \(wikiEscape(orientation))") }
-        if !row2.isEmpty { lines.append("* " + row2.joined(separator: " · ")) }
-
-        var row3: [String] = []
-        if let free = t.freeDiskBytes { row3.append("*Free disk:* \(byteString(free))") }
-        if let mem = t.appMemoryBytes { row3.append("*App memory:* \(byteString(mem))") }
-        if !row3.isEmpty { lines.append("* " + row3.joined(separator: " · ")) }
-
-        return lines.isEmpty ? "_No telemetry_" : lines.joined(separator: "\n")
+        if let lowPower = t.lowPowerMode {
+            rows.append("||Low power mode|\(lowPower ? "(on) on" : "(off) off")|")
+        }
+        if let thermal = t.thermalState { rows.append(row("Thermal", thermal)) }
+        if let orientation = t.orientation { rows.append(row("Orientation", orientation)) }
+        if let free = t.freeDiskBytes { rows.append(row("Free disk", plainByteString(free))) }
+        if let mem = t.appMemoryBytes { rows.append(row("App memory", plainByteString(mem))) }
+        return rows.isEmpty ? "_No telemetry_" : rows.joined(separator: "\n")
     }
 
-    private static func byteString(_ bytes: Int64) -> String {
+    /// Unescaped byte string — callers pass it through `cell`/`row` for escaping.
+    private static func plainByteString(_ bytes: Int64) -> String {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .binary
-        // May contain wiki special characters (e.g. "-"); pass through the escaper.
-        return wikiEscape(formatter.string(fromByteCount: bytes))
+        return formatter.string(fromByteCount: bytes)
     }
 
     private static func timeString(_ date: Date) -> String {
         let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "HH:mm:ss"
         return f.string(from: date)
     }
 
-    private static func iso8601(_ date: Date) -> String {
-        let f = ISO8601DateFormatter()
-        f.formatOptions = [.withInternetDateTime]
+    /// Human-readable date & time, e.g. `23.07.2026 14:31:05` (`seconds: false` →
+    /// `23.07.2026 14:31`). Device-local time zone.
+    static func dateTimeString(_ date: Date, seconds: Bool = true) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = seconds ? "dd.MM.yyyy HH:mm:ss" : "dd.MM.yyyy HH:mm"
         return f.string(from: date)
     }
 }

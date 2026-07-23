@@ -112,4 +112,13 @@ final class CollieConfigurationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(config.baseRetryDelay, 0)
         XCTAssertGreaterThanOrEqual(config.maxScreenshotBytes, 0)
     }
+
+    func testLabelsParsedFromCommaSeparatedValue() {
+        XCTAssertEqual(
+            CollieConfiguration.labels(fromCommaSeparated: " collie, ios report ,,uat "),
+            ["collie", "ios-report", "uat"]
+        )
+        XCTAssertEqual(CollieConfiguration.labels(fromCommaSeparated: nil), [])
+        XCTAssertEqual(CollieConfiguration.labels(fromCommaSeparated: "  "), [])
+    }
 }

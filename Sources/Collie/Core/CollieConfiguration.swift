@@ -46,7 +46,7 @@ public struct CollieConfiguration: Sendable {
 
     // MARK: - Report meta
 
-    /// App name used in the issue summary prefix: `[AppName] …`. If blank, the bundle
+    /// App name shown in the issue description's Report table. If blank, the bundle
     /// name is used.
     public var appDisplayName: String
 
@@ -124,6 +124,21 @@ public struct CollieConfiguration: Sendable {
         self.diagnostics = diagnostics
     }
 
+    // MARK: - Labels
+
+    /// Parses a comma-separated label list (e.g. the `COLLIE_JIRA_LABELS` xcconfig
+    /// value) into Jira labels: trims whitespace, drops empties, and replaces inner
+    /// spaces with `-` (Jira labels cannot contain spaces).
+    public static func labels(fromCommaSeparated raw: String?) -> [String] {
+        guard let raw else { return [] }
+        return raw.split(separator: ",")
+            .map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: " ", with: "-")
+            }
+            .filter { !$0.isEmpty }
+    }
+
     // MARK: - Validation (fail-closed)
 
     /// Returns the reason if any required Jira field is blank; `nil` when all are set.
@@ -167,7 +182,7 @@ public struct CollieConfiguration: Sendable {
         return fragments.filter { !$0.isEmpty }
     }
 
-    /// App name to use in the summary prefix (falls back to the bundle).
+    /// App name to show in the description (falls back to the bundle).
     var resolvedAppDisplayName: String {
         let trimmed = appDisplayName.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return trimmed }

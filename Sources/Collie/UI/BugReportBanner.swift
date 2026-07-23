@@ -2,10 +2,11 @@
 import UIKit
 import SwiftUI
 
-/// The bug-reporter UI orchestrator: when the device is shaken, shows a bubble from
-/// the bottom inside a **separate `UIWindow`** (never touching the app's hierarchy);
-/// **Yes** → presents the report sheet; finally shows a "PROJ-123 created" / "Queued"
-/// toast.
+/// The bug-reporter UI orchestrator: when the device is shaken, shows Collie UI inside
+/// a **separate `UIWindow`** (never touching the app's hierarchy). In a Collie-only
+/// project this is a yes/no bubble from the bottom (**Yes** → the report sheet); when
+/// tool switching is wired (`Collie.onLogoTap`) the question is skipped and the report
+/// sheet opens directly. Finally shows a "PROJ-123 created" / "Queued" toast.
 @MainActor
 final class BugReportBanner {
 
@@ -55,14 +56,23 @@ final class BugReportBanner {
         // Don't repeat while a banner/sheet is already visible.
         guard window == nil else { return }
         Collie.diag("Shake detected")
-        // Capture the screen at shake time, before the banner window appears (Collie's
+        // Capture the screen at shake time, before the Collie window appears (Collie's
         // own alert-level windows are excluded from the render anyway).
         pendingScreenshot = ScreenRenderer.renderKeyWindow()
-        presentBanner()
+        guard installWindow() else { return }
+        if logoTapHandler != nil {
+            // Tool switching is wired → another diagnostics tool lives in this project,
+            // so no question is asked: the report sheet opens directly. Only Collie-only
+            // projects keep the yes/no banner (a shake there may be accidental).
+            presentSheet()
+        } else {
+            presentBanner()
+        }
     }
 
-    private func presentBanner() {
-        guard let scene = Self.activeScene() else { return }
+    /// Creates the overlay window + passthrough container. `false` when no scene exists.
+    private func installWindow() -> Bool {
+        guard let scene = Self.activeScene() else { return false }
 
         let window = UIWindow(windowScene: scene)
         window.windowLevel = .alert + 1
@@ -72,6 +82,12 @@ final class BugReportBanner {
         window.rootViewController = container
         window.makeKeyAndVisible()
         self.window = window
+        return true
+    }
+
+    private func presentBanner() {
+        guard let container = window?.rootViewController as? PassthroughViewController
+        else { return }
 
         let host = UIHostingController(
             rootView: BugReportBannerView(

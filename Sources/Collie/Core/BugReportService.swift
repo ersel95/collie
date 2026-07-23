@@ -11,6 +11,10 @@ public final class BugReportService: @unchecked Sendable {
     let configuration: CollieConfiguration
     private let queue: UploadQueue
 
+    /// When Collie was configured — written into every report (description + a
+    /// synthetic "Collie initialized" log entry).
+    let initializedAt = Date()
+
     init(configuration: CollieConfiguration, transport: (any JiraTransport)? = nil) {
         self.configuration = configuration
         let effectiveTransport = transport ?? JiraClient(configuration: configuration)
@@ -78,8 +82,18 @@ public final class BugReportService: @unchecked Sendable {
         }
         let effectiveName = testerName ?? identity.name ?? CollieDeviceIdentity.storedName()
 
-        // The host's log snapshot — ALL categories, raw entries.
-        let entries = configuration.logSnapshotProvider?() ?? []
+        // The host's log snapshot — ALL categories, raw entries — plus Collie's own
+        // init marker, inserted at its chronological position so the timeline shows
+        // when Collie started.
+        var entries = configuration.logSnapshotProvider?() ?? []
+        let initEntry = CollieLogEntry(
+            date: initializedAt,
+            level: "info",
+            category: "collie",
+            message: "Collie initialized — \(JiraIssueBuilder.dateTimeString(initializedAt))"
+        )
+        let insertIndex = entries.firstIndex { $0.date > initializedAt } ?? entries.endIndex
+        entries.insert(initEntry, at: insertIndex)
         let sessionID = configuration.sessionIDProvider?() ?? ""
 
         let context = JiraIssueBuilder.ReportContext(
@@ -90,6 +104,7 @@ public final class BugReportService: @unchecked Sendable {
             telemetry: telemetry,
             sessionID: sessionID,
             capturedAt: Date(),
+            collieInitializedAt: initializedAt,
             entries: entries
         )
 
@@ -105,10 +120,12 @@ public final class BugReportService: @unchecked Sendable {
     }
 
     /// Encodes log entries for the attachment file (`collie-logs-*.json`).
+    /// Pretty-printed with stable key order so the attachment is readable as-is —
+    /// still ALL entries, in full (the description may summarize; this file never does).
     static func encodeLogs(_ entries: [CollieLogEntry]) throws -> Data {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.withoutEscapingSlashes]
+        encoder.outputFormatting = [.withoutEscapingSlashes, .prettyPrinted, .sortedKeys]
         return try encoder.encode(entries)
     }
 

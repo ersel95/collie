@@ -37,6 +37,7 @@ final class JiraIssueBuilderTests: XCTestCase {
             telemetry: nil,
             sessionID: "session-1",
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
+            collieInitializedAt: Date(timeIntervalSince1970: 1_699_999_000),
             entries: entries
         )
     }
@@ -69,24 +70,12 @@ final class JiraIssueBuilderTests: XCTestCase {
 
     // MARK: - Summary
 
-    func testSummaryUsesAppNameAndFirstLine() {
-        let summary = JiraIssueBuilder.makeSummary(
-            appName: "MyApp",
-            whatHappened: "Payment screen did not open\nsecond line"
-        )
-        XCTAssertEqual(summary, "[MyApp] Payment screen did not open")
-    }
-
-    func testSummaryCappedAt250() {
-        let long = String(repeating: "a", count: 400)
-        let summary = JiraIssueBuilder.makeSummary(appName: "MyApp", whatHappened: long)
-        XCTAssertEqual(summary.count, 250)
-    }
-
-    func testFirstLineFallsBackToBugReport() {
-        XCTAssertEqual(JiraIssueBuilder.firstLine(""), "Bug report")
-        XCTAssertEqual(JiraIssueBuilder.firstLine("   \nx"), "Bug report")
-        XCTAssertEqual(JiraIssueBuilder.firstLine(nil), "Bug report")
+    func testSummaryIsCollieReportWithDateTime() {
+        let summary = JiraIssueBuilder.makeSummary(capturedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        XCTAssertTrue(summary.hasPrefix("Collie iOS Report - "), summary)
+        // Date&time part: dd.MM.yyyy HH:mm (device-local time zone).
+        let dateTime = summary.replacingOccurrences(of: "Collie iOS Report - ", with: "")
+        XCTAssertNotNil(dateTime.range(of: #"^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$"#, options: .regularExpression), summary)
     }
 
     // MARK: - Wiki escape (markup-injection prevention)
@@ -137,8 +126,12 @@ final class JiraIssueBuilderTests: XCTestCase {
         let section = JiraIssueBuilder.formatNetwork(views)
         let lines = section.split(separator: "\n").map(String.init)
 
-        XCTAssertTrue(lines[0].contains("fail"))
-        XCTAssertTrue(lines[0].contains("500"))
+        // lines[0] is the table header; the failing request must be the first data row,
+        // marked (x) with a red bold status.
+        XCTAssertTrue(lines[0].hasPrefix("|| |"))
+        XCTAssertTrue(lines[1].contains("fail"))
+        XCTAssertTrue(lines[1].contains("(x)"))
+        XCTAssertTrue(lines[1].contains("{color:#DE350B}*500*{color}"))
         XCTAssertTrue(section.contains("{code}\nboom\n{code}"))
         XCTAssertTrue(section.contains("_+6 more requests in attached collie-logs JSON_"))
     }
@@ -164,8 +157,8 @@ final class JiraIssueBuilderTests: XCTestCase {
             metadata: ["screen": "PaymentView", "kind": "push"]
         )
         let section = JiraIssueBuilder.formatNavigation([JiraIssueBuilder.NavigationView(entry: entry)])
-        XCTAssertTrue(section.contains("PaymentView"))
-        XCTAssertTrue(section.contains("(push)"))
+        XCTAssertTrue(section.contains("||Time||Screen||Transition||"))
+        XCTAssertTrue(section.contains("|PaymentView|push|"))
     }
 
     func testCategorySummaryCountsSortedDescending() {
@@ -173,8 +166,8 @@ final class JiraIssueBuilderTests: XCTestCase {
             (0..<3).map { _ in CollieLogEntry(date: Date(), level: "info", category: "network", message: "n") } +
             (0..<1).map { _ in CollieLogEntry(date: Date(), level: "info", category: "auth", message: "a") }
         let summary = JiraIssueBuilder.summarizeCategories(entries)
-        let networkIndex = summary.range(of: "network: 3")
-        let authIndex = summary.range(of: "auth: 1")
+        let networkIndex = summary.range(of: "|network|3|")
+        let authIndex = summary.range(of: "|auth|1|")
         XCTAssertNotNil(networkIndex)
         XCTAssertNotNil(authIndex)
         XCTAssertLessThan(networkIndex!.lowerBound, authIndex!.lowerBound)
@@ -188,10 +181,29 @@ final class JiraIssueBuilderTests: XCTestCase {
             configuration: makeConfig(),
             context: makeContext(entries: [networkEntry(url: "https://api.example.com/x", status: "404")])
         )
-        for header in ["h3. Reporter", "h3. Environment", "h3. What happened?", "h3. What was expected?", "h3. Navigation", "h3. Network", "h3. Logs"] {
+        for header in ["h3. (i) Report", "h3. (!) What happened?", "h3. (/) What was expected?", "h3. Navigation", "h3. Network", "h3. Logs"] {
             XCTAssertTrue(description.contains(header), "Missing section: \(header)")
         }
-        XCTAssertTrue(description.contains("Name:"))
-        XCTAssertTrue(description.contains("Ersel"))
+        XCTAssertTrue(description.contains("||Reporter|Ersel|"))
+        XCTAssertTrue(description.contains("||Collie initialized|"))
+        XCTAssertTrue(description.contains("{panel:bgColor=#FFEBE6|borderColor=#FFBDAD}"))
+    }
+
+    func testDescriptionMapsDeviceIdentifierToMarketingName() {
+        // makeContext uses "iPhone15,3" → must render as "iPhone 14 Pro Max".
+        let description = JiraIssueBuilder.makeDescription(
+            configuration: makeConfig(),
+            context: makeContext()
+        )
+        XCTAssertTrue(description.contains("iPhone 14 Pro Max"))
+        XCTAssertFalse(description.contains("iPhone15,3"))
+    }
+
+    // MARK: - Device model mapping
+
+    func testDeviceModelMapping() {
+        XCTAssertEqual(CollieDeviceModel.marketingName(for: "iPhone16,1"), "iPhone 15 Pro")
+        XCTAssertEqual(CollieDeviceModel.marketingName(for: "iPhone18,3"), "iPhone 17")
+        XCTAssertEqual(CollieDeviceModel.marketingName(for: "iPhoneFuture,1"), "iPhoneFuture,1")
     }
 }

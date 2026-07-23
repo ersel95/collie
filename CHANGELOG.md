@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 — 2026-07-23
+
+### Fixed
+- **Dashes and question marks no longer render as HTML entities.** Jira turns a
+  backslash escape into a numeric entity outside table cells, so the Network section's
+  host line came out as `apigateway&#45;adc.tst.yapikredi.nl`. Escaping is now limited to
+  the characters that can actually break the document — `{`, `}`, `[`, `]`, `|`, `!` —
+  and inline-style characters (`-`, `*`, `_`, `+`, `^`, `~`, `#`, `?`) travel as typed.
+  This also cleans up every "What happened?" panel that contained a dash or a question
+  mark. Empty cells now show a plain `-` instead of an escaped one.
+
 ## 0.6.0 — 2026-07-23
 
 ### Changed

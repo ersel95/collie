@@ -80,9 +80,16 @@ final class JiraIssueBuilderTests: XCTestCase {
 
     // MARK: - Wiki escape (markup-injection prevention)
 
-    func testWikiEscapeEscapesControlCharacters() {
+    /// Only structural characters are escaped. Jira renders a backslash escape as a
+    /// numeric HTML entity outside table cells (`apigateway\-adc` → `apigateway&#45;adc`),
+    /// so inline-style characters are left alone on purpose.
+    func testWikiEscapeOnlyEscapesStructuralCharacters() {
         let escaped = JiraIssueBuilder.wikiEscape("a*b_c{d}[e]|f-g#h!i?j+k^l~m")
-        XCTAssertEqual(escaped, ##"a\*b\_c\{d\}\[e\]\|f\-g\#h\!i\?j\+k\^l\~m"##)
+        XCTAssertEqual(escaped, ##"a*b_c\{d\}\[e\]\|f-g#h\!i?j+k^l~m"##)
+    }
+
+    func testWikiEscapeLeavesDashesAndQuestionMarksIntact() {
+        XCTAssertEqual(JiraIssueBuilder.wikiEscape("time-deposit?x=1"), "time-deposit?x=1")
     }
 
     func testWikiEscapeNormalizesCRLF() {

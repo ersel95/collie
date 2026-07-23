@@ -355,7 +355,7 @@ enum JiraIssueBuilder {
     /// empty.
     static func cell(_ value: String?) -> String {
         let escaped = wikiEscape(value).replacingOccurrences(of: "\n", with: " ")
-        return escaped.isEmpty ? "\\-" : escaped
+        return escaped.isEmpty ? "-" : escaped
     }
 
     /// A `||Key|value|` table row with a header-style key column. `key` is Collie's own
@@ -376,7 +376,7 @@ enum JiraIssueBuilder {
     /// (`NetworkAttachmentBuilder.slug`), so it is deliberately NOT escaped — escaping
     /// would break the link.
     private static func fileCell(_ filename: String?) -> String {
-        guard let filename, !filename.isEmpty else { return "\\-" }
+        guard let filename, !filename.isEmpty else { return "-" }
         let label = filename.split(separator: "-").prefix(2).joined(separator: "-")
         return label.isEmpty ? "[^\(filename)]" : "[\(label)^\(filename)]"
     }
@@ -431,16 +431,22 @@ enum JiraIssueBuilder {
     /// Status column: red bold for failures, green for successful responses.
     private static func statusCell(_ n: NetworkView) -> String {
         guard let status = n.status else {
-            return n.isFailure ? "{color:#DE350B}*ERR*{color}" : "\\-"
+            return n.isFailure ? "{color:#DE350B}*ERR*{color}" : "-"
         }
         return n.isFailure
             ? "{color:#DE350B}*\(status)*{color}"
             : "{color:#00875A}\(status){color}"
     }
 
-    private static let wikiSpecials: Set<Character> = [
-        "{", "}", "[", "]", "|", "*", "_", "-", "#", "!", "?", "+", "^", "~"
-    ]
+    /// Only the characters that can actually break the document's structure: macros
+    /// (`{}`), links/attachments (`[]`), cell separators (`|`) and embedded images (`!`).
+    ///
+    /// Inline-style characters (`-`, `*`, `_`, `+`, `^`, `~`, `#`, `?`) are deliberately
+    /// NOT escaped: Jira renders a backslash escape as a numeric HTML entity outside
+    /// table cells, so `apigateway-adc` came out as `apigateway&#45;adc`. Leaving them
+    /// alone can at worst make a word render italic/struck through — a cosmetic risk far
+    /// smaller than entity noise on every dash and question mark.
+    private static let wikiSpecials: Set<Character> = ["{", "}", "[", "]", "|", "!"]
 
     /// Escapes wiki-markup control characters (markup-injection prevention).
     static func wikiEscape(_ input: String?) -> String {

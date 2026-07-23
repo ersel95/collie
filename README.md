@@ -61,7 +61,7 @@ Tester shakes the device
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ersel95/collie.git", from: "0.6.0")
+    .package(url: "https://github.com/ersel95/collie.git", from: "0.6.1")
 ]
 ```
 

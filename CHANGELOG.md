@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.4.0 — 2026-07-23
+
+### Added
+- **One attachment per network request.** Next to the (unchanged, still complete)
+  `collie-logs-*.json`, every captured request is uploaded as its own plain-text file —
+  `net-001-POST-500-v1-payments.txt` — containing the summary line, request/response
+  headers, and the **full, never truncated** bodies.
+- The description's Network table has a new **`File`** column linking to that attachment
+  (`[^net-001-…txt]`), so a single request can be downloaded straight from the table.
+- `CollieConfiguration.maxNetworkAttachments` (default `50`, `0` disables): caps how many
+  per-request files are uploaded, since each one is a separate upload. Requests past the
+  cap keep their table row (without a link) and stay in the log JSON.
+- **`Customer no` row** in the Report table: any log entry (any category) carrying a
+  `customerNo` metadata key feeds it, newest non-empty value wins — so a report shows
+  which account was signed in. Hosts log it on their sign-in paths
+  (`Olaf.info("Signed in", category: .auth, metadata: ["customerNo": customerNo])`).
+  The row is omitted when nothing logs the key.
+
+### Changed
+- The network table is no longer capped at 15 rows — every request is listed (safety
+  ceiling 200) so each row can point at its file. Inline `{code}` failure bodies below
+  the table are now limited to the first 10 failures; the rest are one click away in
+  their own attachment.
+- Report table split into single-fact rows: `Device` / `iOS version` / `App` /
+  `Version` (version + build) / `Environment` were previously merged into two rows.
+- `Locale` row is now `Language`, showing the English language name next to the code
+  (`tr_TR` → `Turkish (Türkiye) (tr_TR)`).
+- `Collie initialized` renamed to `Session started` (both the description row and the
+  synthetic log entry).
+- The upload queue tracks each network file's own `done` flag: a transient failure
+  re-uploads only what is missing, and still never re-creates the issue.
+
 ## 0.3.0 — 2026-07-23
 
 ### Changed

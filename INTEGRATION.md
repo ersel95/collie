@@ -45,12 +45,39 @@ Netfox, Pulse, os_log, or your own. ALL provided entries are uploaded to the Jir
 in full as a pretty-printed `collie-logs-*.json` attachment; entries with category
 `network` / `navigation` additionally feed the issue description's Network/Navigation
 sections. Collie also inserts one synthetic entry of its own (category `collie`,
-"Collie initialized — <date&time>") at its chronological position in the timeline.
+"Session started — <date&time>") at its chronological position in the timeline.
+
+Every captured network request is **also attached as its own plain-text file**
+(`net-001-POST-500-v1-payments.txt`: summary line, headers, and the full — never
+truncated — request/response bodies). The description's Network table links to them in
+its `File` column, so a single request can be downloaded without opening the big log
+JSON. `config.maxNetworkAttachments` (default 50, `0` disables it) caps how many files
+are uploaded — each one is a separate upload, so it also caps how long a submission
+takes; requests past the cap still appear in the table and in the log JSON, just without
+their own file.
 
 For the description sections to populate, network entries should carry these metadata
 keys: `method`, `url`, `status`, `durationMs`, `error`, `requestBody`, `responseBody`
 (headers: `reqH.` / `respH.` prefixes); navigation entries: `screen`, `kind`. Entries
-without them still travel in the JSON attachment.
+without them still travel in the JSON attachment (and any extra metadata key ends up in
+the per-request file's "Other metadata" section).
+
+### Showing the signed-in account
+
+Any entry — any category — carrying a **`customerNo`** metadata key feeds the
+description's `Customer no` row: Collie takes the newest non-empty value, i.e. the
+account signed in when the report was captured. If nothing logs it, the row is omitted.
+
+Leave one log line on each sign-in path (`LoginView`, `RememberMeLoginView`, biometric
+re-login, account switch…) right after the sign-in succeeds:
+
+```swift
+// With Olaf:
+Olaf.info("Signed in", category: .auth, metadata: ["customerNo": customerNo])
+```
+
+The value ends up in the Jira issue (description + log JSON), so log the customer
+number you are comfortable seeing there — not credentials or tokens.
 
 **Olaf quick start** (our apps use Olaf, so this bridge is ready to paste — Olaf already
 writes the metadata keys under the names above):

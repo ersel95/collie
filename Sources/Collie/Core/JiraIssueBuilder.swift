@@ -23,12 +23,18 @@ enum JiraIssueBuilder {
     }
 
     /// Maximum characters a single failing body may occupy in the description.
-    /// (Jira's description field is limited to ~32k; full bodies live in the attached JSON.)
+    /// (Jira's description field is limited to ~32k; full bodies live in the attached JSON
+    /// and in the per-request network attachments.)
     private static let maxBodyChars = 1_500
     /// Overall safety ceiling for the description.
     private static let maxDescriptionChars = 30_000
-    /// Maximum number of requests listed in the network section.
-    static let maxNetworkRows = 15
+    /// Safety ceiling for the network table. Every captured request gets a row (so its
+    /// attachment can be linked); this only stops a pathological session from blowing up
+    /// the description.
+    static let maxNetworkRows = 200
+    /// Maximum number of failing requests whose bodies are inlined below the table. The
+    /// rest are one click away via their own attachment.
+    static let maxFailureDetails = 10
 
     // MARK: - Create body
 
@@ -80,18 +86,28 @@ enum JiraIssueBuilder {
         context: ReportContext
     ) -> String {
         let identity = context.identity
-        let network = context.entries.filter { $0.category == "network" }.map(NetworkView.init)
+        let network = NetworkAttachmentBuilder.plan(
+            entries: context.entries,
+            limit: configuration.maxNetworkAttachments
+        )
         let navigation = context.entries.filter { $0.category == "navigation" }.map(NavigationView.init)
 
-        let reportRows = [
-            row("Reporter", context.testerName ?? "Unknown tester"),
-            row("Device", "\(CollieDeviceModel.marketingName(for: identity.model)) — iOS \(identity.osVersion)"),
-            row("App", "\(configuration.resolvedAppDisplayName) \(CollieDeviceIdentity.appVersion) (build \(CollieDeviceIdentity.appBuild)) — \(configuration.environment)"),
-            row("Locale", identity.locale),
+        var rows = [row("Reporter", context.testerName ?? "Unknown tester")]
+        if let customerNumber = latestCustomerNumber(context.entries) {
+            rows.append(row("Customer no", customerNumber))
+        }
+        rows.append(contentsOf: [
+            row("Device", CollieDeviceModel.marketingName(for: identity.model)),
+            row("iOS version", identity.osVersion),
+            row("App", configuration.resolvedAppDisplayName),
+            row("Version", "\(CollieDeviceIdentity.appVersion) (build \(CollieDeviceIdentity.appBuild))"),
+            row("Environment", configuration.environment),
+            row("Language", languageString(identity.locale)),
             row("Session", context.sessionID.isEmpty ? "-" : context.sessionID),
             row("Captured", dateTimeString(context.capturedAt)),
-            row("Collie initialized", dateTimeString(context.collieInitializedAt))
-        ].joined(separator: "\n")
+            row("Session started", dateTimeString(context.collieInitializedAt))
+        ])
+        let reportRows = rows.joined(separator: "\n")
 
         var sections: [String] = [
             "h3. (i) Report",
@@ -127,6 +143,28 @@ enum JiraIssueBuilder {
         return description
     }
 
+    // MARK: - Signed-in user
+
+    /// Metadata key a host writes on its sign-in log entries so a report shows which
+    /// account the tester was using. Category-agnostic: any entry carrying the key
+    /// counts, so no logging library or screen name leaks into Collie.
+    static let customerNumberKey = "customerNo"
+
+    /// The most recent non-empty `customerNo` in the log snapshot — i.e. the account
+    /// signed in at capture time. `nil` when the host never logs it (or nobody signed
+    /// in), in which case the Report table simply omits the row.
+    static func latestCustomerNumber(_ entries: [CollieLogEntry]) -> String? {
+        var latest: (date: Date, value: String)?
+        for entry in entries {
+            guard let raw = entry.metadata[customerNumberKey] else { continue }
+            let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { continue }
+            if let current = latest, entry.date < current.date { continue }
+            latest = (entry.date, value)
+        }
+        return latest?.value
+    }
+
     // MARK: - Derived views (device-side counterpart of the backend's report-parser)
 
     struct NetworkView {
@@ -138,6 +176,18 @@ enum JiraIssueBuilder {
         let error: String?
         let requestBody: String?
         let responseBody: String?
+        let message: String
+        /// `reqH.`-prefixed metadata, un-prefixed.
+        let requestHeaders: [String: String]
+        /// `respH.`-prefixed metadata, un-prefixed.
+        let responseHeaders: [String: String]
+        /// Everything else the host attached, so the per-request file can dump the entry
+        /// in full.
+        let otherMetadata: [String: String]
+
+        private static let knownKeys: Set<String> = [
+            "method", "url", "status", "durationMs", "error", "requestBody", "responseBody"
+        ]
 
         init(entry: CollieLogEntry) {
             let meta = entry.metadata
@@ -149,6 +199,23 @@ enum JiraIssueBuilder {
             error = meta["error"]
             requestBody = meta["requestBody"]
             responseBody = meta["responseBody"]
+            message = entry.message
+
+            var request: [String: String] = [:]
+            var response: [String: String] = [:]
+            var other: [String: String] = [:]
+            for (key, value) in meta {
+                if key.hasPrefix("reqH.") {
+                    request[String(key.dropFirst("reqH.".count))] = value
+                } else if key.hasPrefix("respH.") {
+                    response[String(key.dropFirst("respH.".count))] = value
+                } else if !Self.knownKeys.contains(key) {
+                    other[key] = value
+                }
+            }
+            requestHeaders = request
+            responseHeaders = response
+            otherMetadata = other
         }
 
         var isFailure: Bool {
@@ -179,27 +246,40 @@ enum JiraIssueBuilder {
         return lines.joined(separator: "\n")
     }
 
-    static func formatNetwork(_ network: [NetworkView]) -> String {
-        guard !network.isEmpty else { return "_No network activity captured_" }
-
-        // Failing/critical requests first; original order preserved on ties (stable sort).
-        let sorted = network.enumerated().sorted { a, b in
+    /// Failing/critical requests first; original order preserved on ties (stable sort).
+    /// Shared with `NetworkAttachmentBuilder` so a table row and its attachment carry the
+    /// same number.
+    static func failuresFirst(_ network: [NetworkView]) -> [NetworkView] {
+        network.enumerated().sorted { a, b in
             let aRank = a.element.isFailure ? 0 : 1
             let bRank = b.element.isFailure ? 0 : 1
             return aRank == bRank ? a.offset < b.offset : aRank < bRank
         }.map(\.element)
-        let top = sorted.prefix(maxNetworkRows)
+    }
 
-        var lines = ["|| ||Method||URL||Status||Duration||"]
-        lines.append(contentsOf: top.map { n in
+    /// The network table. The `File` column links to the per-request attachment
+    /// (`[^net-003-GET-500-v1-users.txt]`) so a single request can be downloaded without
+    /// opening the big log JSON.
+    static func formatNetwork(_ plan: [NetworkAttachmentBuilder.PlannedRequest]) -> String {
+        guard !plan.isEmpty else { return "_No network activity captured_" }
+        let top = plan.prefix(maxNetworkRows)
+
+        var lines = [
+            "_Each request is also attached as its own file — see the File column._",
+            "|| ||Method||URL||Status||Duration||File||"
+        ]
+        lines.append(contentsOf: top.map { item in
+            let n = item.view
             let icon = n.isFailure ? "(x)" : "(/)"
             let dur = n.durationMs.map { "\($0)ms" } ?? "-"
-            return "|\(icon)|*\(cell(n.method ?? "GET"))*|\(cell(n.url ?? "-"))|\(statusCell(n))|\(cell(dur))|"
+            return "|\(icon)|*\(cell(n.method ?? "GET"))*|\(cell(n.url ?? "-"))|\(statusCell(n))|\(cell(dur))|\(fileCell(item.filename))|"
         })
 
         // Failing request/response details live below the table ({code} blocks cannot
         // sit inside table cells).
-        for n in top where n.isFailure {
+        var remainingDetails = maxFailureDetails
+        for item in top where item.view.isFailure && remainingDetails > 0 {
+            let n = item.view
             var details: [String] = []
             if let error = n.error, !error.isEmpty {
                 details.append("{color:#DE350B}\(wikiEscape(error)){color}")
@@ -211,14 +291,21 @@ enum JiraIssueBuilder {
                 details.append("Response:\n\(codeBlock(truncate(body)))")
             }
             guard !details.isEmpty else { continue }
-            lines.append("\n(x) *\(cell(n.method ?? "GET")) \(cell(n.url ?? "-"))*\n"
+            remainingDetails -= 1
+            let file = item.filename.map { " \($0.isEmpty ? "" : "[^\($0)]")" } ?? ""
+            lines.append("\n(x) *\(cell(n.method ?? "GET")) \(cell(n.url ?? "-"))*\(file)\n"
                          + details.joined(separator: "\n"))
         }
 
-        let more = network.count > top.count
-            ? "\n_+\(network.count - top.count) more requests in attached collie-logs JSON_"
-            : ""
-        return lines.joined(separator: "\n") + more
+        var notes: [String] = []
+        if plan.count > top.count {
+            notes.append("_+\(plan.count - top.count) more requests in the attached collie-logs JSON_")
+        }
+        let unattached = plan.filter { $0.filename == nil }.count
+        if unattached > 0 {
+            notes.append("_\(unattached) requests were not attached individually (attachment limit reached); they are in the attached collie-logs JSON._")
+        }
+        return lines.joined(separator: "\n") + (notes.isEmpty ? "" : "\n" + notes.joined(separator: "\n"))
     }
 
     static func summarizeCategories(_ entries: [CollieLogEntry]) -> String {
@@ -254,6 +341,27 @@ enum JiraIssueBuilder {
     /// prevents user text from closing the panel early (`{` → `\{`).
     private static func panel(_ body: String, bgColor: String, borderColor: String) -> String {
         "{panel:bgColor=\(bgColor)|borderColor=\(borderColor)}\n\(body.isEmpty ? "-" : body)\n{panel}"
+    }
+
+    /// File column: a Jira attachment link. The filename is Collie-generated and
+    /// slug-safe (`NetworkAttachmentBuilder.slug`), so it is deliberately NOT escaped —
+    /// escaping would break the link.
+    private static func fileCell(_ filename: String?) -> String {
+        guard let filename, !filename.isEmpty else { return "\\-" }
+        return "[^\(filename)]"
+    }
+
+    /// `tr_TR` → `Turkish (Turkey) (tr_TR)`. English names, so the issue reads the same
+    /// for everyone regardless of the device's language; falls back to the raw
+    /// identifier when it cannot be resolved.
+    static func languageString(_ identifier: String) -> String {
+        let trimmed = identifier.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else { return "-" }
+        let english = Locale(identifier: "en_US")
+        guard let name = english.localizedString(forIdentifier: trimmed), !name.isEmpty else {
+            return trimmed
+        }
+        return "\(name) (\(trimmed))"
     }
 
     /// Status column: red bold for failures, green for successful responses.

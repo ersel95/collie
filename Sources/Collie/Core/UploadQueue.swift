@@ -19,7 +19,8 @@ public enum CollieSubmitOutcome: Sendable, Equatable {
 /// **Two-step job**: one report = 1× issue create + N× attachments. If the create
 /// succeeds but an attachment is left unfinished, `issueKey` is written into the
 /// envelope; a retry **does not create a new issue** — it resumes from the remaining
-/// step (duplicate prevention).
+/// step (duplicate prevention). The same holds per network file: each one records its
+/// own `done` flag, so a retry only uploads what is left.
 ///
 /// Concurrency: runs on a single serial `actor` → no races.
 actor UploadQueue {
@@ -36,6 +37,16 @@ actor UploadQueue {
         let hasLogs: Bool
         var screenshotDone: Bool
         var logsDone: Bool
+        /// Per-request network attachments, in upload order. Optional so envelopes
+        /// written by an older Collie version still decode.
+        var networkFiles: [NetworkFileState]?
+    }
+
+    /// One per-request network attachment's progress inside an envelope.
+    private struct NetworkFileState: Codable {
+        let filename: String
+        let mimeType: String
+        var done: Bool
     }
 
     private enum StepOutcome {
@@ -96,7 +107,12 @@ actor UploadQueue {
     ///   would just repeat).
     /// - A permanent attachment failure does not drop the report; the attachment is
     ///   skipped and the issue still counts as `.sent`.
-    func submit(issueBody: Data, screenshot: Data?, logs: Data?) async -> CollieSubmitOutcome {
+    func submit(
+        issueBody: Data,
+        screenshot: Data?,
+        logs: Data?,
+        networkFiles: [CollieAttachment] = []
+    ) async -> CollieSubmitOutcome {
         var envelope = Envelope(
             id: UUID().uuidString,
             attempt: 0,
@@ -106,9 +122,18 @@ actor UploadQueue {
             hasScreenshot: screenshot?.isEmpty == false,
             hasLogs: logs?.isEmpty == false,
             screenshotDone: false,
-            logsDone: false
+            logsDone: false,
+            networkFiles: networkFiles.map {
+                NetworkFileState(filename: $0.filename, mimeType: $0.mimeType, done: false)
+            }
         )
-        let outcome = await perform(envelope: &envelope, issueBody: issueBody, screenshot: screenshot, logs: logs)
+        let outcome = await perform(
+            envelope: &envelope,
+            issueBody: issueBody,
+            screenshot: screenshot,
+            logs: logs,
+            networkFiles: networkFiles
+        )
         switch outcome {
         case .done(let issueKey):
             return .sent(issueKey: issueKey)
@@ -118,7 +143,13 @@ actor UploadQueue {
         case .transient(let reason):
             diag("Report could not be sent, queued: \(reason)")
             envelope.nextAttemptAt = Date().addingTimeInterval(configuration.baseRetryDelay)
-            persist(envelope: envelope, issueBody: issueBody, screenshot: screenshot, logs: logs)
+            persist(
+                envelope: envelope,
+                issueBody: issueBody,
+                screenshot: screenshot,
+                logs: logs,
+                networkFiles: networkFiles
+            )
             return .queued
         }
     }
@@ -145,8 +176,15 @@ actor UploadQueue {
             }
             let screenshot = envelope.hasScreenshot ? readFile(envelope.id, kind: .screenshot) : nil
             let logs = envelope.hasLogs ? readFile(envelope.id, kind: .logs) : nil
+            let networkFiles = readNetworkFiles(envelope)
 
-            let outcome = await perform(envelope: &envelope, issueBody: issueBody, screenshot: screenshot, logs: logs)
+            let outcome = await perform(
+                envelope: &envelope,
+                issueBody: issueBody,
+                screenshot: screenshot,
+                logs: logs,
+                networkFiles: networkFiles
+            )
             switch outcome {
             case .done(let issueKey):
                 diag("Queued report sent: \(issueKey)")
@@ -192,7 +230,8 @@ actor UploadQueue {
         envelope: inout Envelope,
         issueBody: Data,
         screenshot: Data?,
-        logs: Data?
+        logs: Data?,
+        networkFiles: [CollieAttachment]
     ) async -> StepOutcome {
         // Step 1 — issue create (only if not already done; duplicate prevention).
         if envelope.issueKey == nil {
@@ -241,6 +280,32 @@ actor UploadQueue {
             }
         }
 
+        // Step 4 — one attachment per network request. Progress is tracked per file, so
+        // a transient failure only re-uploads what is still missing.
+        if var states = envelope.networkFiles, !states.isEmpty {
+            for index in states.indices where !states[index].done {
+                guard index < networkFiles.count, !networkFiles[index].data.isEmpty else {
+                    // Payload missing on disk — skip rather than block the report.
+                    states[index].done = true
+                    continue
+                }
+                switch await transport.attach(
+                    issueKey: issueKey, data: networkFiles[index].data,
+                    filename: states[index].filename, mimeType: states[index].mimeType
+                ) {
+                case .success:
+                    states[index].done = true
+                case .permanentFailure(let reason):
+                    diag("Network attachment skipped with a permanent error (\(issueKey), \(states[index].filename)): \(reason)")
+                    states[index].done = true
+                case .transientFailure(let reason):
+                    envelope.networkFiles = states
+                    return .transient(reason)
+                }
+            }
+            envelope.networkFiles = states
+        }
+
         return .done(issueKey: issueKey)
     }
 
@@ -256,11 +321,23 @@ actor UploadQueue {
         directory.appendingPathComponent("\(id).\(kind.rawValue)")
     }
 
+    /// Per-request network payloads are stored one file per request, indexed by their
+    /// position in the envelope's `networkFiles`.
+    private func networkFileURL(_ id: String, index: Int) -> URL {
+        directory.appendingPathComponent("\(id).net-\(index)")
+    }
+
     private func envelopeURL(_ id: String) -> URL {
         directory.appendingPathComponent("\(id).json")
     }
 
-    private func persist(envelope: Envelope, issueBody: Data, screenshot: Data?, logs: Data?) {
+    private func persist(
+        envelope: Envelope,
+        issueBody: Data,
+        screenshot: Data?,
+        logs: Data?,
+        networkFiles: [CollieAttachment]
+    ) {
         do {
             try issueBody.write(to: fileURL(envelope.id, kind: .issue), options: Self.writeOptions)
             if envelope.hasScreenshot, let screenshot {
@@ -268,6 +345,9 @@ actor UploadQueue {
             }
             if envelope.hasLogs, let logs {
                 try logs.write(to: fileURL(envelope.id, kind: .logs), options: Self.writeOptions)
+            }
+            for (index, file) in networkFiles.enumerated() {
+                try file.data.write(to: networkFileURL(envelope.id, index: index), options: Self.writeOptions)
             }
         } catch {
             remove(envelope)
@@ -285,10 +365,26 @@ actor UploadQueue {
         try? Data(contentsOf: fileURL(id, kind: kind))
     }
 
+    /// Reads the envelope's network payloads back in envelope order. A payload that is
+    /// gone from disk becomes empty data; `perform` skips those instead of blocking the
+    /// report.
+    private func readNetworkFiles(_ envelope: Envelope) -> [CollieAttachment] {
+        (envelope.networkFiles ?? []).enumerated().map { index, state in
+            CollieAttachment(
+                filename: state.filename,
+                mimeType: state.mimeType,
+                data: (try? Data(contentsOf: networkFileURL(envelope.id, index: index))) ?? Data()
+            )
+        }
+    }
+
     private func remove(_ envelope: Envelope) {
         try? fileManager.removeItem(at: envelopeURL(envelope.id))
         for kind in [FileKind.issue, .screenshot, .logs] {
             try? fileManager.removeItem(at: fileURL(envelope.id, kind: kind))
+        }
+        for index in (envelope.networkFiles ?? []).indices {
+            try? fileManager.removeItem(at: networkFileURL(envelope.id, index: index))
         }
     }
 

@@ -116,24 +116,50 @@ final class JiraIssueBuilderTests: XCTestCase {
         )
     }
 
-    func testNetworkSectionPutsFailuresFirstAndCapsRows() {
-        // 20 successful + 1 failing request: the failure must come first, with 15 rows
-        // total + a "+N more" note.
+    private func networkSection(_ entries: [CollieLogEntry], limit: Int = 50) -> String {
+        JiraIssueBuilder.formatNetwork(NetworkAttachmentBuilder.plan(entries: entries, limit: limit))
+    }
+
+    func testNetworkSectionPutsFailuresFirst() {
         var entries = (0..<20).map { networkEntry(url: "https://api.example.com/ok/\($0)", status: "200", at: TimeInterval($0)) }
         entries.append(networkEntry(url: "https://api.example.com/fail", status: "500", responseBody: "boom", at: 99))
 
-        let views = entries.map(JiraIssueBuilder.NetworkView.init)
-        let section = JiraIssueBuilder.formatNetwork(views)
+        let section = networkSection(entries)
         let lines = section.split(separator: "\n").map(String.init)
 
-        // lines[0] is the table header; the failing request must be the first data row,
-        // marked (x) with a red bold status.
-        XCTAssertTrue(lines[0].hasPrefix("|| |"))
-        XCTAssertTrue(lines[1].contains("fail"))
-        XCTAssertTrue(lines[1].contains("(x)"))
-        XCTAssertTrue(lines[1].contains("{color:#DE350B}*500*{color}"))
+        // lines[0] is the File-column hint, lines[1] the table header; the failing
+        // request must be the first data row, marked (x) with a red bold status.
+        XCTAssertTrue(lines[1].hasPrefix("|| |"))
+        XCTAssertTrue(lines[2].contains("fail"))
+        XCTAssertTrue(lines[2].contains("(x)"))
+        XCTAssertTrue(lines[2].contains("{color:#DE350B}*500*{color}"))
         XCTAssertTrue(section.contains("{code}\nboom\n{code}"))
-        XCTAssertTrue(section.contains("_+6 more requests in attached collie-logs JSON_"))
+        // Every request is listed now — no row cap below maxNetworkRows.
+        XCTAssertEqual(lines.filter { $0.hasPrefix("|(/)") || $0.hasPrefix("|(x)") }.count, 21)
+    }
+
+    /// Each row links to its own attachment; the numbering follows the table order, so
+    /// the failure (row 1) owns `net-001-…`.
+    func testNetworkRowsLinkToTheirAttachment() {
+        let entries = [
+            networkEntry(url: "https://api.example.com/v1/users", status: "200", at: 0),
+            networkEntry(url: "https://api.example.com/v1/payments/42", status: "500", at: 1)
+        ]
+        let section = networkSection(entries)
+        XCTAssertTrue(section.contains("||Duration||File||"), section)
+        XCTAssertTrue(section.contains("[^net-001-GET-500-payments-42.txt]"), section)
+        XCTAssertTrue(section.contains("[^net-002-GET-200-v1-users.txt]"), section)
+    }
+
+    /// Past the attachment cap a row stays in the table but carries no link.
+    func testNetworkRowsBeyondAttachmentLimitHaveNoLink() {
+        let entries = (0..<3).map { networkEntry(url: "https://api.example.com/ok/\($0)", status: "200", at: TimeInterval($0)) }
+        let section = networkSection(entries, limit: 2)
+
+        XCTAssertTrue(section.contains("[^net-001-GET-200-ok-0.txt]"), section)
+        XCTAssertTrue(section.contains("[^net-002-GET-200-ok-1.txt]"), section)
+        XCTAssertFalse(section.contains("net-003"), section)
+        XCTAssertTrue(section.contains("_1 requests were not attached individually"), section)
     }
 
     func testNetworkSectionEmptyPlaceholder() {
@@ -142,8 +168,7 @@ final class JiraIssueBuilderTests: XCTestCase {
 
     func testFailureBodiesOnlyIncludedForFailures() {
         let ok = networkEntry(url: "https://api.example.com/ok", status: "200", responseBody: "should-not-appear")
-        let section = JiraIssueBuilder.formatNetwork([JiraIssueBuilder.NetworkView(entry: ok)])
-        XCTAssertFalse(section.contains("should-not-appear"))
+        XCTAssertFalse(networkSection([ok]).contains("should-not-appear"))
     }
 
     // MARK: - Navigation and category counts
@@ -185,8 +210,74 @@ final class JiraIssueBuilderTests: XCTestCase {
             XCTAssertTrue(description.contains(header), "Missing section: \(header)")
         }
         XCTAssertTrue(description.contains("||Reporter|Ersel|"))
-        XCTAssertTrue(description.contains("||Collie initialized|"))
+        XCTAssertTrue(description.contains("||Session started|"))
         XCTAssertTrue(description.contains("{panel:bgColor=#FFEBE6|borderColor=#FFBDAD}"))
+    }
+
+    /// Device / iOS version / app / version+build / environment are separate rows.
+    func testReportTableSplitsDeviceAppAndEnvironmentRows() {
+        let description = JiraIssueBuilder.makeDescription(
+            configuration: makeConfig(),
+            context: makeContext()
+        )
+        XCTAssertTrue(description.contains("||Device|iPhone 14 Pro Max|"), description)
+        XCTAssertTrue(description.contains("||iOS version|17.4|"), description)
+        XCTAssertTrue(description.contains("||App|MyApp|"), description)
+        XCTAssertTrue(description.contains("||Environment|staging|"), description)
+        XCTAssertNotNil(
+            description.range(of: #"\|\|Version\|[^|]*\(build [^|]*\)\|"#, options: .regularExpression),
+            description
+        )
+    }
+
+    // MARK: - Signed-in customer
+
+    private func signInEntry(_ customerNo: String, at seconds: TimeInterval) -> CollieLogEntry {
+        CollieLogEntry(
+            date: Date(timeIntervalSince1970: seconds),
+            level: "info",
+            category: "auth",
+            message: "signed in",
+            metadata: ["customerNo": customerNo]
+        )
+    }
+
+    func testCustomerNumberUsesTheNewestNonEmptyValue() {
+        let entries = [
+            signInEntry("11111111", at: 10),
+            signInEntry("  ", at: 20),                 // blank → ignored (e.g. sign-out)
+            signInEntry("22222222", at: 30),
+            CollieLogEntry(date: Date(timeIntervalSince1970: 40), level: "info", category: "general", message: "x")
+        ]
+        XCTAssertEqual(JiraIssueBuilder.latestCustomerNumber(entries), "22222222")
+    }
+
+    func testCustomerNumberIsNilWhenNeverLogged() {
+        XCTAssertNil(JiraIssueBuilder.latestCustomerNumber([
+            CollieLogEntry(date: Date(), level: "info", category: "auth", message: "signed in")
+        ]))
+    }
+
+    func testDescriptionShowsCustomerNumberRowOnlyWhenSignedIn() {
+        let signedIn = JiraIssueBuilder.makeDescription(
+            configuration: makeConfig(),
+            context: makeContext(entries: [signInEntry("12345678", at: 10)])
+        )
+        XCTAssertTrue(signedIn.contains("||Customer no|12345678|"), signedIn)
+
+        let anonymous = JiraIssueBuilder.makeDescription(configuration: makeConfig(), context: makeContext())
+        XCTAssertFalse(anonymous.contains("Customer no"), anonymous)
+    }
+
+    func testLanguageStringAddsEnglishNameNextToTheCode() {
+        // The region name comes from ICU ("Turkey" → "Türkiye" in newer versions), so
+        // only the language and the appended code are asserted.
+        let turkish = JiraIssueBuilder.languageString("tr_TR")
+        XCTAssertTrue(turkish.hasPrefix("Turkish ("), turkish)
+        XCTAssertTrue(turkish.hasSuffix(" (tr_TR)"), turkish)
+        XCTAssertEqual(JiraIssueBuilder.languageString("en_US"), "English (United States) (en_US)")
+        // Unresolvable identifiers fall back to the raw value.
+        XCTAssertEqual(JiraIssueBuilder.languageString(""), "-")
     }
 
     func testDescriptionMapsDeviceIdentifierToMarketingName() {

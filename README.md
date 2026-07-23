@@ -14,7 +14,7 @@ Tester shakes the device
   → Banner: "Spotted a problem? Want to share it?"  (skipped when tool switching is wired)
   → [Yes] → Form: "What happened?" / "What was expected?" (+ name on first use)
   → Jira: POST /rest/api/2/issue  (subtask under the parent, assignee from config)
-  →       POST /issue/{key}/attachments  (screenshot.jpg + collie-logs.json)
+  →       POST /issue/{key}/attachments  (screenshot.jpg + collie-logs.json + one file per network request)
   → Success: "PROJ-123 created" · Transient error: disk queue + automatic retry with backoff
 ```
 
@@ -35,9 +35,16 @@ Tester shakes the device
   in the form; progressive JPEG compression down to the size limit.
 - **Rich issue content** — visual wiki-markup description: a Report info table (device
   shown by its marketing name, e.g. `iPhone 15 Pro`), colored "What happened / expected"
-  panels, telemetry, navigation timeline, failure-first network table (top 15) with
-  red/green status colors, category counts. Summary is `Collie iOS Report - <date&time>`;
+  panels, telemetry, navigation timeline, failure-first network table with red/green
+  status colors, category counts. Summary is `Collie iOS Report - <date&time>`;
   the raw logs travel in full as a pretty-printed JSON attachment.
+- **One attachment per network request** — next to the big `collie-logs` JSON, every
+  captured request is attached as its own readable text file
+  (`net-001-POST-500-v1-payments.txt`) with full request/response bodies, linked from the
+  description table's `File` column. Capped by `maxNetworkAttachments` (default 50).
+- **Signed-in account** — log a `customerNo` metadata key on your sign-in paths and every
+  report shows which account the tester was using (`Customer no` row); omitted when the
+  key is never logged.
 - **Log-source agnostic** — feed logs from any logger ([Olaf](https://github.com/ersel95/olaf),
   Netfox, Pulse, os_log, your own) via the `logSnapshotProvider` closure; Collie has no
   dependency on any of them. ALL entries travel to Jira in full as a JSON attachment,
@@ -51,7 +58,7 @@ Tester shakes the device
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ersel95/collie.git", from: "0.3.0")
+    .package(url: "https://github.com/ersel95/collie.git", from: "0.4.0")
 ]
 ```
 

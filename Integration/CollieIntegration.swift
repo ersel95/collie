@@ -80,6 +80,14 @@ enum CollieIntegration {
         // Pulse, os_log, your own) to [CollieLogEntry]. ALL entries are attached to the
         // Jira issue as collie-logs JSON; network/navigation entries also feed the
         // issue description (see the metadata key convention in CollieLogEntry docs).
+        // Each network request is additionally attached as its own net-*.txt file,
+        // linked from the description's Network table (cap: config.maxNetworkAttachments,
+        // default 50 — set it to 0 to turn per-request files off).
+        //
+        // Signed-in account: log a "customerNo" metadata key on every sign-in path
+        // (LoginView, RememberMeLoginView, biometric re-login…) and the report's
+        // Report table gets a "Customer no" row with the newest value. With Olaf:
+        // Olaf.info("Signed in", category: .auth, metadata: ["customerNo": customerNo])
         //
         // Ready-made Olaf bridge — uncomment if your app uses Olaf:
         // config.logSnapshotProvider = {

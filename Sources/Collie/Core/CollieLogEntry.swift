@@ -23,6 +23,11 @@ import Foundation
 /// section): `method`, `url`, `status`, `durationMs`, `reqBytes`, `respBytes`, `error`,
 /// `requestBody`, `responseBody`; request headers use the `reqH.` prefix, response
 /// headers the `respH.` prefix. Navigation entries: `screen`, `kind`.
+///
+/// One more key, on any entry of any category: `customerNo`. Hosts write it on their
+/// sign-in log entries; the newest non-empty value becomes the issue description's
+/// "Customer no" row, so a report shows which account was signed in when the bug was
+/// captured. Without it the row is simply omitted.
 public struct CollieLogEntry: Codable, Sendable {
     public let date: Date
     public let level: String

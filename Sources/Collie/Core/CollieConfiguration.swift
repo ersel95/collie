@@ -71,6 +71,13 @@ public struct CollieConfiguration: Sendable {
     /// attachment limit (default ~10 MB).
     public var maxScreenshotBytes: Int
 
+    /// How many network requests are uploaded as **individual** attachments (one plain
+    /// text file per request, linked from the description's Network table). Each file is
+    /// a separate upload, so this caps how long a submission takes; requests past the cap
+    /// still appear in the table and in the full log JSON, just without their own file.
+    /// `0` turns per-request attachments off.
+    public var maxNetworkAttachments: Int
+
     // MARK: - Host bridges (optional)
 
     /// Closure providing the log snapshot at report time. The host maps its own logs
@@ -100,6 +107,7 @@ public struct CollieConfiguration: Sendable {
         baseRetryDelay: TimeInterval = 5,
         screenshotJPEGQuality: Double = 0.7,
         maxScreenshotBytes: Int = 4 * 1_048_576,
+        maxNetworkAttachments: Int = 50,
         logSnapshotProvider: (@Sendable () -> [CollieLogEntry])? = nil,
         sessionIDProvider: (@Sendable () -> String?)? = nil,
         diagnostics: (@Sendable (String) -> Void)? = nil
@@ -119,6 +127,7 @@ public struct CollieConfiguration: Sendable {
         self.baseRetryDelay = max(0, baseRetryDelay)
         self.screenshotJPEGQuality = min(1, max(0.1, screenshotJPEGQuality))
         self.maxScreenshotBytes = max(0, maxScreenshotBytes)
+        self.maxNetworkAttachments = max(0, maxNetworkAttachments)
         self.logSnapshotProvider = logSnapshotProvider
         self.sessionIDProvider = sessionIDProvider
         self.diagnostics = diagnostics

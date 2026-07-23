@@ -48,7 +48,8 @@ Ordered steps — all required:
    - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear (the
      report sheet directly, if `onLogoTap` is wired); submit
      the form → a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with
-     `screenshot.jpg` + `collie-logs-*.json` attachments and the correct assignee.
+     `screenshot.jpg` + `collie-logs-*.json` + one `net-*.txt` per captured network
+     request as attachments, and the correct assignee.
    - If the banner doesn't appear: check the `config.diagnostics` output — when a
      required field is blank, Collie stays silently off (fail-closed).
    - Corporate Jira is reachable only over VPN; without VPN a submission becomes
@@ -76,7 +77,11 @@ type name).
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are attached to the issue in full (the description may
-    summarize/truncate, the JSON attachment never does).
+    summarize/truncate, the JSON attachment never does — and neither do the per-request
+    `net-*.txt` files).
+  - Network attachment names are deterministic: the description is written *before* the
+    files are uploaded and links to them by name, so `NetworkAttachmentBuilder.plan`
+    (ordering + naming) and `JiraIssueBuilder.formatNetwork` must stay in sync.
   - Core stays log-source agnostic: no logging-library types or names in `Sources/`
     (concrete bridges live only in docs and the integration template).
   - No PII (IP/SSID/location) is ever added to telemetry.

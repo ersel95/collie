@@ -90,7 +90,7 @@ public final class BugReportService: @unchecked Sendable {
             date: initializedAt,
             level: "info",
             category: "collie",
-            message: "Collie initialized — \(JiraIssueBuilder.dateTimeString(initializedAt))"
+            message: "Session started — \(JiraIssueBuilder.dateTimeString(initializedAt))"
         )
         let insertIndex = entries.firstIndex { $0.date > initializedAt } ?? entries.endIndex
         entries.insert(initEntry, at: insertIndex)
@@ -116,7 +116,23 @@ public final class BugReportService: @unchecked Sendable {
         }
 
         let logsJSON = entries.isEmpty ? nil : try? Self.encodeLogs(entries)
-        return await queue.submit(issueBody: issueBody, screenshot: screenshotJPEG, logs: logsJSON)
+
+        // One plain-text file per network request, so a single request can be downloaded
+        // from Jira instead of the whole log JSON. Built from the same deterministic plan
+        // the description's Network table links to.
+        let networkFiles = NetworkAttachmentBuilder.attachments(
+            for: NetworkAttachmentBuilder.plan(
+                entries: entries,
+                limit: configuration.maxNetworkAttachments
+            )
+        )
+
+        return await queue.submit(
+            issueBody: issueBody,
+            screenshot: screenshotJPEG,
+            logs: logsJSON,
+            networkFiles: networkFiles
+        )
     }
 
     /// Encodes log entries for the attachment file (`collie-logs-*.json`).

@@ -65,6 +65,16 @@ final class UploadQueueTests: XCTestCase {
     private let screenshot = Data([0xFF, 0xD8])
     private let logs = #"[]"#.data(using: .utf8)!
 
+    private func networkFiles(_ count: Int) -> [CollieAttachment] {
+        (1...count).map {
+            CollieAttachment(
+                filename: String(format: "net-%03d-GET-200-ok.txt", $0),
+                mimeType: "text/plain",
+                data: "request \($0)".data(using: .utf8)!
+            )
+        }
+    }
+
     // MARK: - Happy path
 
     func testSubmitSendsIssueAndBothAttachments() async {
@@ -89,6 +99,67 @@ final class UploadQueueTests: XCTestCase {
 
         XCTAssertEqual(outcome, .sent(issueKey: "PROJ-1"))
         XCTAssertEqual(transport.attachCallCount, 0)
+    }
+
+    // MARK: - Per-request network attachments
+
+    func testSubmitUploadsEveryNetworkFile() async {
+        let transport = MockTransport()
+        let queue = makeQueue(transport: transport)
+
+        let outcome = await queue.submit(
+            issueBody: issueBody, screenshot: screenshot, logs: logs,
+            networkFiles: networkFiles(3)
+        )
+
+        XCTAssertEqual(outcome, .sent(issueKey: "PROJ-1"))
+        XCTAssertEqual(transport.attachCallCount, 5)   // screenshot + logs + 3 requests
+        XCTAssertEqual(
+            transport.attachedFilenames.suffix(3),
+            ["net-001-GET-200-ok.txt", "net-002-GET-200-ok.txt", "net-003-GET-200-ok.txt"]
+        )
+        let pending = await queue.pendingCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    /// A transient failure part-way through the network files must only re-upload the
+    /// ones that are still missing (and never re-create the issue).
+    func testRetryResumesFromTheFailedNetworkFile() async {
+        let transport = MockTransport()
+        // screenshot ✓, logs ✓, net-001 ✓, net-002 ✗ (transient)
+        transport.attachResults = [.success(()), .success(()), .success(()), .transientFailure("dropped")]
+        let queue = makeQueue(transport: transport)
+
+        let outcome = await queue.submit(
+            issueBody: issueBody, screenshot: screenshot, logs: logs,
+            networkFiles: networkFiles(3)
+        )
+        XCTAssertEqual(outcome, .queued)
+        XCTAssertEqual(transport.attachedFilenames.suffix(2), ["net-001-GET-200-ok.txt", "net-002-GET-200-ok.txt"])
+
+        await queue.drain()
+
+        XCTAssertEqual(transport.createCallCount, 1, "the issue must not be created twice")
+        // Only net-002 and net-003 are retried.
+        XCTAssertEqual(transport.attachedFilenames.suffix(2), ["net-002-GET-200-ok.txt", "net-003-GET-200-ok.txt"])
+        let pending = await queue.pendingCount()
+        XCTAssertEqual(pending, 0)
+    }
+
+    func testNetworkAttachmentPermanentFailureIsSkipped() async {
+        let transport = MockTransport()
+        transport.attachResults = [.success(()), .success(()), .permanentFailure("HTTP 413")]
+        let queue = makeQueue(transport: transport)
+
+        let outcome = await queue.submit(
+            issueBody: issueBody, screenshot: screenshot, logs: logs,
+            networkFiles: networkFiles(2)
+        )
+
+        XCTAssertEqual(outcome, .sent(issueKey: "PROJ-1"))
+        XCTAssertEqual(transport.attachCallCount, 4)
+        let pending = await queue.pendingCount()
+        XCTAssertEqual(pending, 0)
     }
 
     // MARK: - Permanent failure

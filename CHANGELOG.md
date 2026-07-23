@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-07-23
 
 ### Changed
 - When tool switching is wired (`Collie.onLogoTap` handler set), a shake now skips

@@ -3,10 +3,10 @@ import UIKit
 import SwiftUI
 
 /// The bug-reporter UI orchestrator: when the device is shaken, shows Collie UI inside
-/// a **separate `UIWindow`** (never touching the app's hierarchy). In a Collie-only
-/// project this is a yes/no bubble from the bottom (**Yes** → the report sheet); when
-/// tool switching is wired (`Collie.onLogoTap`) the question is skipped and the report
-/// sheet opens directly. Finally shows a "PROJ-123 created" / "Queued" toast.
+/// a **separate `UIWindow`** (never touching the app's hierarchy). By default a shake
+/// raises a yes/no bubble from the bottom (**Yes** → the report sheet); with
+/// `CollieConfiguration.asksBeforeReporting = false` the question is skipped and the
+/// report sheet opens directly. Finally shows a "PROJ-123 created" / "Queued" toast.
 @MainActor
 final class BugReportBanner {
 
@@ -60,10 +60,10 @@ final class BugReportBanner {
         // own alert-level windows are excluded from the render anyway).
         pendingScreenshot = ScreenRenderer.renderKeyWindow()
         guard installWindow() else { return }
-        if logoTapHandler != nil {
-            // Tool switching is wired → another diagnostics tool lives in this project,
-            // so no question is asked: the report sheet opens directly. Only Collie-only
-            // projects keep the yes/no banner (a shake there may be accidental).
+        // Explicit host choice (`CollieConfiguration.asksBeforeReporting`): ask first —
+        // a shake may be accidental — or open the report sheet straight away. Whether
+        // tool switching is wired (`Collie.onLogoTap`) does NOT affect this.
+        if Collie.bugReportService?.configuration.asksBeforeReporting == false {
             presentSheet()
         } else {
             presentBanner()

@@ -127,9 +127,9 @@ OlafUI.onLogoTap { }                    // Olaf logo → close; Collie opens on 
 `Collie.onLogoTap` runs its handler after the Collie UI has fully closed, so presenting
 another tool from it is safe.
 
-Wiring `Collie.onLogoTap` also changes shake behavior: the "Spotted a problem?" yes/no
-banner is skipped and the report sheet opens directly. Only a Collie-only project (no
-handler set) keeps the yes/no banner on shake.
+Shake behavior is independent of the handler: `config.asksBeforeReporting` (default
+`true`) decides whether a shake raises the "Spotted a problem?" yes/no banner first or
+opens the report sheet directly (`false`).
 
 ## 6. Offline / VPN behavior
 

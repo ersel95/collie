@@ -11,7 +11,7 @@ screenshot captured at shake time and a log JSON are uploaded as attachments to 
 ```
 Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
-  → Banner: "Spotted a problem? Want to share it?"  (skipped when tool switching is wired)
+  → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
   → [Yes] → Form: "What happened?" / "What was expected?" (+ name on first use)
   → Jira: POST /rest/api/2/issue  (subtask under the parent, assignee from config)
   →       POST /issue/{key}/attachments  (screenshot.jpg + collie-logs.json + one file per network request)
@@ -50,15 +50,16 @@ Tester shakes the device
   dependency on any of them. ALL entries travel to Jira in full as a JSON attachment,
   and network/navigation entries also feed the issue description.
 - **Tool switching** — `Collie.onLogoTap { ... }`: tapping the logo in the report sheet
-  closes the Collie UI and hands off to another diagnostics tool of your choice. With a
-  handler wired, a shake opens the report sheet directly (no yes/no banner).
+  closes the Collie UI and hands off to another diagnostics tool of your choice.
+- **Ask or go straight in** — `asksBeforeReporting` (default `true`): a shake raises the
+  "Spotted a problem?" yes/no banner first, or opens the report form directly (`false`).
 - **No PII** — telemetry is device-state only (no IP/SSID/location).
 
 ## Installation
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ersel95/collie.git", from: "0.4.0")
+    .package(url: "https://github.com/ersel95/collie.git", from: "0.5.0")
 ]
 ```
 

@@ -118,8 +118,9 @@ enum CollieIntegration {
         // Collie.onLogoTap { OlafUI.present() }         // Collie logo → open Olaf
         // OlafUI.onLogoTap { /* Collie opens on the next shake */ }
         //
-        // With onLogoTap wired, a shake opens the report sheet directly (no yes/no
-        // banner); in a Collie-only project the banner is shown first.
+        // Wiring the logos does NOT change shake behavior — that is decided by
+        // `config.asksBeforeReporting` (default true: a shake asks first; set it to
+        // false to open the report sheet straight away).
 
         // Suggestion: retry pending (offline/VPN-less) reports on returning to foreground.
         // NotificationCenter.default.addObserver(

@@ -42,11 +42,11 @@ Ordered steps — all required:
 6. **Tool switching (optional):** if another shake-activated tool is installed, wire
    `Collie.onLogoTap { ... }` (runs after the Collie UI fully closes) and the other
    tool's equivalent so testers can hop between them — see `INTEGRATION.md` §5.
-   With the handler wired, a shake skips the yes/no banner and opens the report sheet
-   directly; without it (Collie-only project) the banner is shown first.
+   The handler does not change shake behavior — that is `config.asksBeforeReporting`
+   (default `true`: ask first; `false`: open the report sheet directly).
 7. **Verify:**
    - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear (the
-     report sheet directly, if `onLogoTap` is wired); submit
+     report sheet directly, when `asksBeforeReporting` is `false`); submit
      the form → a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with
      `screenshot.jpg` + `collie-logs-*.json` + one `net-*.txt` per captured network
      request as attachments, and the correct assignee.

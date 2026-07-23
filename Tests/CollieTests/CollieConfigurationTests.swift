@@ -16,6 +16,20 @@ final class CollieConfigurationTests: XCTestCase {
         )
     }
 
+    // MARK: - Flow
+
+    /// A shake asks before opening the form unless the host opts out — and the choice is
+    /// explicit, never derived from whether `Collie.onLogoTap` is wired.
+    func testAsksBeforeReportingDefaultsToTrue() {
+        XCTAssertTrue(makeConfig().asksBeforeReporting)
+    }
+
+    func testAsksBeforeReportingCanBeDisabled() {
+        var config = makeConfig()
+        config.asksBeforeReporting = false
+        XCTAssertFalse(config.asksBeforeReporting)
+    }
+
     // MARK: - URL construction
 
     func testIssueCreateURL() {

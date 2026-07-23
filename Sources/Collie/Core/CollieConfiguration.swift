@@ -44,6 +44,15 @@ public struct CollieConfiguration: Sendable {
     /// Labels added to every created issue (optional).
     public var defaultLabels: [String]
 
+    // MARK: - Flow
+
+    /// Does a shake ask before opening the report form? `true` (default) shows the
+    /// "Spotted a problem?" yes/no banner first; `false` opens the report sheet directly.
+    ///
+    /// This is an explicit switch: whether another diagnostics tool is installed (i.e.
+    /// whether `Collie.onLogoTap` has a handler) no longer affects it.
+    public var asksBeforeReporting: Bool
+
     // MARK: - Report meta
 
     /// App name shown in the issue description's Report table. If blank, the bundle
@@ -100,6 +109,7 @@ public struct CollieConfiguration: Sendable {
         subtaskIssueType: String = "Sub-task",
         assigneeUsername: String = "",
         defaultLabels: [String] = [],
+        asksBeforeReporting: Bool = true,
         appDisplayName: String = "",
         environment: String = "staging",
         requestTimeout: TimeInterval = 30,
@@ -120,6 +130,7 @@ public struct CollieConfiguration: Sendable {
         self.subtaskIssueType = subtaskIssueType
         self.assigneeUsername = assigneeUsername
         self.defaultLabels = defaultLabels
+        self.asksBeforeReporting = asksBeforeReporting
         self.appDisplayName = appDisplayName
         self.environment = environment
         self.requestTimeout = max(1, requestTimeout)

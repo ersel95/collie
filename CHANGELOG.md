@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 — 2026-07-23
+
+### Changed
+- **The yes/no banner is back under explicit control.** Since 0.3.0 a shake skipped the
+  "Spotted a problem?" question whenever `Collie.onLogoTap` had a handler — an implicit
+  rule that silently changed the flow as soon as a project wired tool switching. The
+  decision is now a single explicit setting, `CollieConfiguration.asksBeforeReporting`
+  (default `true` → ask first; `false` → open the report sheet directly), and the logo
+  handler no longer affects shake behavior at all.
+
 ## 0.4.0 — 2026-07-23
 
 ### Added

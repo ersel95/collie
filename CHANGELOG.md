@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0 — 2026-07-23
+
+### Changed
+Jira sizes a table's columns by their widest cell, so one long value used to squeeze
+every other column into a vertical letter-stack ("M/e/t/h/o/d"). Both tables now keep
+their cells short — the full values are still in the log JSON and the per-request files.
+
+- **Network:** the host shared by all requests is hoisted above the table
+  (`*Host:* https://api.example.com`) and rows carry only the path. With requests
+  spread over several hosts the full URLs stay (a bare path would be ambiguous).
+  Over-long paths are cut in the middle, keeping the distinguishing tail.
+- **Network:** the `File` column now shows a short link label (`net-003`) instead of the
+  full attachment name; the link still points at `net-003-GET-500-v1-users.txt`.
+- **Network:** the `URL` column header is now `Path`.
+- **Navigation:** the `Screen` column drops the payload an enum/case dump drags along
+  (`accounts-transactions(screens: …DTO(iban: …))` → `accounts-transactions`) and caps
+  the name at 60 characters. A `navigationTitle` (or `title`) metadata key, when the
+  host provides one, wins over the raw screen id.
+- **Navigation:** the `Transition` column header is now `Kind`.
+
 ## 0.5.0 — 2026-07-23
 
 ### Changed

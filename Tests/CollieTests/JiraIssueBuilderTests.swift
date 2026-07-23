@@ -126,13 +126,13 @@ final class JiraIssueBuilderTests: XCTestCase {
 
         let section = networkSection(entries)
         let lines = section.split(separator: "\n").map(String.init)
+        let headerIndex = lines.firstIndex { $0.hasPrefix("|| |") } ?? 0
 
-        // lines[0] is the File-column hint, lines[1] the table header; the failing
-        // request must be the first data row, marked (x) with a red bold status.
-        XCTAssertTrue(lines[1].hasPrefix("|| |"))
-        XCTAssertTrue(lines[2].contains("fail"))
-        XCTAssertTrue(lines[2].contains("(x)"))
-        XCTAssertTrue(lines[2].contains("{color:#DE350B}*500*{color}"))
+        // The failing request must be the first data row, marked (x) with a red bold
+        // status.
+        XCTAssertTrue(lines[headerIndex + 1].contains("fail"))
+        XCTAssertTrue(lines[headerIndex + 1].contains("(x)"))
+        XCTAssertTrue(lines[headerIndex + 1].contains("{color:#DE350B}*500*{color}"))
         XCTAssertTrue(section.contains("{code}\nboom\n{code}"))
         // Every request is listed now — no row cap below maxNetworkRows.
         XCTAssertEqual(lines.filter { $0.hasPrefix("|(/)") || $0.hasPrefix("|(x)") }.count, 21)
@@ -147,8 +147,83 @@ final class JiraIssueBuilderTests: XCTestCase {
         ]
         let section = networkSection(entries)
         XCTAssertTrue(section.contains("||Duration||File||"), section)
-        XCTAssertTrue(section.contains("[^net-001-GET-500-payments-42.txt]"), section)
-        XCTAssertTrue(section.contains("[^net-002-GET-200-v1-users.txt]"), section)
+        // Short link label, full attachment name as the target.
+        XCTAssertTrue(section.contains("[net-001^net-001-GET-500-payments-42.txt]"), section)
+        XCTAssertTrue(section.contains("[net-002^net-002-GET-200-v1-users.txt]"), section)
+    }
+
+    // MARK: - Table readability (Jira sizes columns by their widest cell)
+
+    /// The shared host is hoisted above the table; rows keep only the path.
+    func testNetworkTableDropsTheSharedHost() {
+        let entries = [
+            networkEntry(url: "https://api.example.com/mobile/v1/appconfig", status: "200", at: 0),
+            networkEntry(url: "https://api.example.com/mobile/v1/menu?type=MAIN", status: "200", at: 1)
+        ]
+        let section = networkSection(entries)
+
+        XCTAssertTrue(section.contains("*Host:* https://api.example.com"), section)
+        XCTAssertTrue(section.contains("||Method||Path||"), section)
+        XCTAssertTrue(section.contains("|/mobile/v1/appconfig|"), section)
+        // No row repeats the origin.
+        XCTAssertFalse(section.contains("|https://api.example.com"), section)
+    }
+
+    /// With several hosts a bare path would be ambiguous → full URLs stay.
+    func testNetworkTableKeepsFullURLsAcrossHosts() {
+        let entries = [
+            networkEntry(url: "https://api.example.com/v1/a", status: "200", at: 0),
+            networkEntry(url: "https://cdn.example.com/v1/b", status: "200", at: 1)
+        ]
+        let section = networkSection(entries)
+
+        XCTAssertFalse(section.contains("*Host:*"), section)
+        XCTAssertTrue(section.contains("https://cdn.example.com/v1/b"), section)
+    }
+
+    func testCommonOriginKeepsPortAndRejectsMixedHosts() {
+        XCTAssertEqual(
+            JiraIssueBuilder.commonOrigin(["https://api.example.com:8443/a", "https://api.example.com:8443/b"]),
+            "https://api.example.com:8443"
+        )
+        XCTAssertNil(JiraIssueBuilder.commonOrigin(["https://a.example.com/x", "https://b.example.com/y"]))
+        XCTAssertNil(JiraIssueBuilder.commonOrigin(["https://a.example.com/x", nil]))
+    }
+
+    func testShortPathTruncatesInTheMiddleKeepingTheTail() {
+        let long = "https://api.example.com/" + String(repeating: "segment/", count: 20) + "final"
+        let short = JiraIssueBuilder.shortPath(long, origin: "https://api.example.com")
+        XCTAssertLessThan(short.count, 80)
+        XCTAssertTrue(short.hasSuffix("final"), short)
+        XCTAssertTrue(short.contains("…"), short)
+    }
+
+    /// Enum/case dumps make the Screen column unreadable — only the head is shown.
+    func testShortScreenStripsAssociatedValues() {
+        XCTAssertEqual(
+            JiraIssueBuilder.shortScreen("generics-popup(YkGenericsFeature.YKPopupType.networkError(message: \"…\"))"),
+            "generics-popup"
+        )
+        XCTAssertEqual(JiraIssueBuilder.shortScreen("dashboard-main"), "dashboard-main")
+        XCTAssertEqual(JiraIssueBuilder.shortScreen(nil), "unknown")
+    }
+
+    /// A screen name that is long even without a payload still gets capped.
+    func testShortScreenCapsPlainLongNames() {
+        let name = String(repeating: "a", count: 120)
+        let short = JiraIssueBuilder.shortScreen(name)
+        XCTAssertEqual(short.count, 61)
+        XCTAssertTrue(short.hasSuffix("…"))
+    }
+
+    /// The host can send a human-readable title; it wins over the raw screen id.
+    func testNavigationPrefersNavigationTitle() {
+        let entry = CollieLogEntry(
+            date: Date(timeIntervalSince1970: 0), level: "info", category: "navigation", message: "screen change",
+            metadata: ["screen": "accounts-transactions(payload: …)", "navigationTitle": "Hesap Hareketleri", "kind": "push"]
+        )
+        let section = JiraIssueBuilder.formatNavigation([JiraIssueBuilder.NavigationView(entry: entry)])
+        XCTAssertTrue(section.contains("|Hesap Hareketleri|push|"), section)
     }
 
     /// Past the attachment cap a row stays in the table but carries no link.
@@ -156,8 +231,8 @@ final class JiraIssueBuilderTests: XCTestCase {
         let entries = (0..<3).map { networkEntry(url: "https://api.example.com/ok/\($0)", status: "200", at: TimeInterval($0)) }
         let section = networkSection(entries, limit: 2)
 
-        XCTAssertTrue(section.contains("[^net-001-GET-200-ok-0.txt]"), section)
-        XCTAssertTrue(section.contains("[^net-002-GET-200-ok-1.txt]"), section)
+        XCTAssertTrue(section.contains("[net-001^net-001-GET-200-ok-0.txt]"), section)
+        XCTAssertTrue(section.contains("[net-002^net-002-GET-200-ok-1.txt]"), section)
         XCTAssertFalse(section.contains("net-003"), section)
         XCTAssertTrue(section.contains("_1 requests were not attached individually"), section)
     }
@@ -182,7 +257,7 @@ final class JiraIssueBuilderTests: XCTestCase {
             metadata: ["screen": "PaymentView", "kind": "push"]
         )
         let section = JiraIssueBuilder.formatNavigation([JiraIssueBuilder.NavigationView(entry: entry)])
-        XCTAssertTrue(section.contains("||Time||Screen||Transition||"))
+        XCTAssertTrue(section.contains("||Time||Screen||Kind||"))
         XCTAssertTrue(section.contains("|PaymentView|push|"))
     }
 

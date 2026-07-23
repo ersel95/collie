@@ -36,8 +36,10 @@ Tester shakes the device
 - **Rich issue content** — visual wiki-markup description: a Report info table (device
   shown by its marketing name, e.g. `iPhone 15 Pro`), colored "What happened / expected"
   panels, telemetry, navigation timeline, failure-first network table with red/green
-  status colors, category counts. Summary is `Collie iOS Report - <date&time>`;
-  the raw logs travel in full as a pretty-printed JSON attachment.
+  status colors, category counts. Tables stay narrow on purpose (shared host hoisted out
+  of the URL column, screen names stripped of their payload) so Jira does not stack the
+  other columns vertically. Summary is `Collie iOS Report - <date&time>`; the raw logs
+  travel in full as a pretty-printed JSON attachment.
 - **One attachment per network request** — next to the big `collie-logs` JSON, every
   captured request is attached as its own readable text file
   (`net-001-POST-500-v1-payments.txt`) with full request/response bodies, linked from the
@@ -59,7 +61,7 @@ Tester shakes the device
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ersel95/collie.git", from: "0.5.0")
+    .package(url: "https://github.com/ersel95/collie.git", from: "0.6.0")
 ]
 ```
 

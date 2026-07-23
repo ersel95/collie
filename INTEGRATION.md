@@ -58,7 +58,11 @@ their own file.
 
 For the description sections to populate, network entries should carry these metadata
 keys: `method`, `url`, `status`, `durationMs`, `error`, `requestBody`, `responseBody`
-(headers: `reqH.` / `respH.` prefixes); navigation entries: `screen`, `kind`. Entries
+(headers: `reqH.` / `respH.` prefixes); navigation entries: `screen`, `kind` — plus an
+optional `navigationTitle` (or `title`), which the Navigation table prefers over the raw
+screen id. Without it Collie falls back to the id with its payload stripped
+(`accounts-transactions(screens: …)` → `accounts-transactions`), so a screen-enum dump
+never blows up the column. Entries
 without them still travel in the JSON attachment (and any extra metadata key ends up in
 the per-request file's "Other metadata" section).
 

@@ -232,16 +232,38 @@ enum JiraIssueBuilder {
 
         init(entry: CollieLogEntry) {
             timestamp = entry.date
-            screen = entry.metadata["screen"] ?? entry.metadata["screenId"] ?? (entry.message.isEmpty ? nil : entry.message)
+            // A screen title if the host provides one; otherwise the raw screen id,
+            // shortened at render time (associated values / payload dumps make the
+            // column unreadable — the full value stays in the log JSON).
+            screen = entry.metadata["navigationTitle"]
+                ?? entry.metadata["title"]
+                ?? entry.metadata["screen"]
+                ?? entry.metadata["screenId"]
+                ?? (entry.message.isEmpty ? nil : entry.message)
             kind = entry.metadata["kind"]
         }
     }
 
+    /// Longest screen name kept in the Navigation table.
+    private static let maxScreenChars = 60
+
+    /// `accounts-transactions(screens: Yk…(iban: …))` → `accounts-transactions`.
+    /// Strips the payload an enum/case dump drags along, then hard-caps the length so
+    /// one row cannot stretch the whole table.
+    static func shortScreen(_ raw: String?) -> String {
+        guard let raw else { return "unknown" }
+        let head = raw.prefix { $0 != "(" }
+        let trimmed = head.trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = trimmed.isEmpty ? raw.trimmingCharacters(in: .whitespacesAndNewlines) : trimmed
+        guard base.count > maxScreenChars else { return base }
+        return String(base.prefix(maxScreenChars)) + "…"
+    }
+
     static func formatNavigation(_ nav: [NavigationView]) -> String {
         guard !nav.isEmpty else { return "_No navigation captured_" }
-        var lines = ["||Time||Screen||Transition||"]
+        var lines = ["||Time||Screen||Kind||"]
         lines.append(contentsOf: nav.map { n in
-            "|\(timeString(n.timestamp))|\(cell(n.screen ?? "unknown"))|\(cell(n.kind ?? "-"))|"
+            "|\(timeString(n.timestamp))|\(cell(shortScreen(n.screen)))|\(cell(n.kind ?? "-"))|"
         })
         return lines.joined(separator: "\n")
     }
@@ -257,22 +279,27 @@ enum JiraIssueBuilder {
         }.map(\.element)
     }
 
-    /// The network table. The `File` column links to the per-request attachment
-    /// (`[^net-003-GET-500-v1-users.txt]`) so a single request can be downloaded without
-    /// opening the big log JSON.
+    /// The network table. Jira sizes table columns by their widest cell, so full URLs
+    /// used to squeeze every other column into vertical letter-stacks: the shared host is
+    /// therefore hoisted above the table and rows carry only the path, while the `File`
+    /// column shows a short link label (`net-003`) pointing at the full attachment name.
     static func formatNetwork(_ plan: [NetworkAttachmentBuilder.PlannedRequest]) -> String {
         guard !plan.isEmpty else { return "_No network activity captured_" }
         let top = plan.prefix(maxNetworkRows)
+        let origin = commonOrigin(top.map(\.view.url))
 
-        var lines = [
-            "_Each request is also attached as its own file — see the File column._",
-            "|| ||Method||URL||Status||Duration||File||"
-        ]
+        var lines: [String] = []
+        if let origin {
+            lines.append("*Host:* \(wikiEscape(origin))\n_Each request is also attached as its own file — see the File column._")
+        } else {
+            lines.append("_Each request is also attached as its own file — see the File column._")
+        }
+        lines.append("|| ||Method||Path||Status||Duration||File||")
         lines.append(contentsOf: top.map { item in
             let n = item.view
             let icon = n.isFailure ? "(x)" : "(/)"
             let dur = n.durationMs.map { "\($0)ms" } ?? "-"
-            return "|\(icon)|*\(cell(n.method ?? "GET"))*|\(cell(n.url ?? "-"))|\(statusCell(n))|\(cell(dur))|\(fileCell(item.filename))|"
+            return "|\(icon)|*\(cell(n.method ?? "GET"))*|\(cell(shortPath(n.url, origin: origin)))|\(statusCell(n))|\(cell(dur))|\(fileCell(item.filename))|"
         })
 
         // Failing request/response details live below the table ({code} blocks cannot
@@ -292,8 +319,8 @@ enum JiraIssueBuilder {
             }
             guard !details.isEmpty else { continue }
             remainingDetails -= 1
-            let file = item.filename.map { " \($0.isEmpty ? "" : "[^\($0)]")" } ?? ""
-            lines.append("\n(x) *\(cell(n.method ?? "GET")) \(cell(n.url ?? "-"))*\(file)\n"
+            let file = item.filename.map { " \($0.isEmpty ? "" : fileCell($0))" } ?? ""
+            lines.append("\n(x) *\(cell(n.method ?? "GET")) \(cell(shortPath(n.url, origin: origin)))*\(file)\n"
                          + details.joined(separator: "\n"))
         }
 
@@ -343,12 +370,49 @@ enum JiraIssueBuilder {
         "{panel:bgColor=\(bgColor)|borderColor=\(borderColor)}\n\(body.isEmpty ? "-" : body)\n{panel}"
     }
 
-    /// File column: a Jira attachment link. The filename is Collie-generated and
-    /// slug-safe (`NetworkAttachmentBuilder.slug`), so it is deliberately NOT escaped —
-    /// escaping would break the link.
+    /// File column: a Jira attachment link labelled with just the request number
+    /// (`[net-003^net-003-GET-500-v1-users.txt]`) — the full name would widen the column
+    /// far more than it informs. The filename is Collie-generated and slug-safe
+    /// (`NetworkAttachmentBuilder.slug`), so it is deliberately NOT escaped — escaping
+    /// would break the link.
     private static func fileCell(_ filename: String?) -> String {
         guard let filename, !filename.isEmpty else { return "\\-" }
-        return "[^\(filename)]"
+        let label = filename.split(separator: "-").prefix(2).joined(separator: "-")
+        return label.isEmpty ? "[^\(filename)]" : "[\(label)^\(filename)]"
+    }
+
+    /// Longest path kept in the Network table.
+    private static let maxPathChars = 70
+
+    /// The scheme+host every request shares, so the table can drop it. `nil` when the
+    /// requests are spread over several hosts (then full URLs stay, since a stripped
+    /// path would be ambiguous).
+    static func commonOrigin(_ urls: [String?]) -> String? {
+        var origins: Set<String> = []
+        for url in urls {
+            guard let url, let components = URLComponents(string: url),
+                  let scheme = components.scheme, let host = components.host else { return nil }
+            let port = components.port.map { ":\($0)" } ?? ""
+            origins.insert("\(scheme)://\(host)\(port)")
+            if origins.count > 1 { return nil }
+        }
+        return origins.first
+    }
+
+    /// `https://api.example.com/v1/users?page=2` → `/v1/users?page=2` once `origin` is
+    /// shown above the table. Over-long paths are cut in the middle, keeping the
+    /// distinguishing tail.
+    static func shortPath(_ url: String?, origin: String?) -> String {
+        guard let url, !url.isEmpty else { return "-" }
+        var path = url
+        if let origin, path.hasPrefix(origin) {
+            path = String(path.dropFirst(origin.count))
+            if path.isEmpty { path = "/" }
+        }
+        guard path.count > maxPathChars else { return path }
+        let head = path.prefix(maxPathChars / 2)
+        let tail = path.suffix(maxPathChars / 2 - 1)
+        return "\(head)…\(tail)"
     }
 
     /// `tr_TR` → `Turkish (Turkey) (tr_TR)`. English names, so the issue reads the same

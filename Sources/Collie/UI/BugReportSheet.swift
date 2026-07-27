@@ -8,7 +8,7 @@ import UIKit
 /// - On first use (no stored name) a **name** field is shown as well (one time only).
 /// - **Send** button: active once both content fields (after trimming) and, if required,
 ///   the name are filled.
-/// - Send → loading → subtask in Jira: closes with the issue key on success; on a
+/// - Send → loading → report uploaded to the panel: closes with the report id on success; on a
 ///   transient failure the report is queued and the sheet closes with "queued"; on a
 ///   permanent failure an inline error is shown.
 @MainActor
@@ -17,7 +17,7 @@ struct BugReportSheet: View {
     /// Why the sheet closed (the banner shows a toast accordingly).
     enum Outcome {
         case cancelled
-        case sent(issueKey: String)
+        case sent(reportID: String)
         case queued
         /// The logo in the navigation bar was tapped: close the Collie UI, then invoke
         /// the host's switch-tool handler.
@@ -202,7 +202,7 @@ struct BugReportSheet: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("About the screenshot")
                     .font(.subheadline.weight(.semibold))
-                Text("This screenshot contains ALL information visible on screen when you send it (including balances, account/card details, and personal data). If there is sensitive data on screen, please don't send the report or leave that screen first. The image is uploaded to Jira together with the report.")
+                Text("This screenshot contains ALL information visible on screen when you send it (including balances, account/card details, and personal data). If there is sensitive data on screen, please don't send the report or leave that screen first. The image is uploaded together with the report and is visible to the analysts reviewing it.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -301,8 +301,8 @@ struct BugReportSheet: View {
             )
             await MainActor.run {
                 switch outcome {
-                case .sent(let issueKey):
-                    onClose(.sent(issueKey: issueKey))
+                case .sent(let reportID):
+                    onClose(.sent(reportID: reportID))
                 case .queued:
                     // Transient failure (e.g. no VPN): the report was queued to disk and
                     // will be retried automatically.

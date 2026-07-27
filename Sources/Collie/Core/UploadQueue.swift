@@ -2,13 +2,13 @@ import Foundation
 
 /// Outcome of a report submission (the UI shows a toast/error based on this).
 public enum CollieSubmitOutcome: Sendable, Equatable {
-    /// The issue was created (with its attachments, or with attachments skipped on a
-    /// permanent error). Key: `PROJ-123`.
-    case sent(issueKey: String)
+    /// The backend accepted the report. Carries the server's report id.
+    case sent(reportID: String)
     /// Transient failure — the report was queued to disk and will be retried
     /// automatically once a connection is available.
     case queued
-    /// Permanent failure (auth/config) — the report could not be sent and was not queued.
+    /// Permanent failure (auth/validation) — the report could not be sent and was not
+    /// queued.
     case rejected(String)
 }
 
@@ -16,11 +16,9 @@ public enum CollieSubmitOutcome: Sendable, Equatable {
 /// `Caches/Collie/uploads/` and retried with exponential backoff. Pending reports are
 /// read back from disk and sending continues even after a process restart.
 ///
-/// **Two-step job**: one report = 1× issue create + N× attachments. If the create
-/// succeeds but an attachment is left unfinished, `issueKey` is written into the
-/// envelope; a retry **does not create a new issue** — it resumes from the remaining
-/// step (duplicate prevention). The same holds per network file: each one records its
-/// own `done` flag, so a retry only uploads what is left.
+/// **One report = one request.** The envelope id doubles as the idempotency key sent to
+/// the backend, so a retry after a lost response resolves to the same report instead of
+/// creating a duplicate (`UploadQueueTests` locks this in).
 ///
 /// Concurrency: runs on a single serial `actor` → no races.
 actor UploadQueue {
@@ -31,32 +29,17 @@ actor UploadQueue {
         var attempt: Int
         let createdAt: Date
         var nextAttemptAt: Date
-        /// Key of the created issue once the create step completed (duplicate prevention).
-        var issueKey: String?
         let hasScreenshot: Bool
-        let hasLogs: Bool
-        var screenshotDone: Bool
-        var logsDone: Bool
-        /// Per-request network attachments, in upload order. Optional so envelopes
-        /// written by an older Collie version still decode.
-        var networkFiles: [NetworkFileState]?
-    }
-
-    /// One per-request network attachment's progress inside an envelope.
-    private struct NetworkFileState: Codable {
-        let filename: String
-        let mimeType: String
-        var done: Bool
     }
 
     private enum StepOutcome {
-        case done(issueKey: String)
-        case createRejected(String)
+        case done(reportID: String)
+        case rejected(String)
         case transient(String)
     }
 
     private let configuration: CollieConfiguration
-    private let transport: any JiraTransport
+    private let transport: any ReportTransport
     private let directory: URL
     private let fileManager = FileManager.default
 
@@ -80,7 +63,7 @@ actor UploadQueue {
 
     init(
         configuration: CollieConfiguration,
-        transport: any JiraTransport,
+        transport: any ReportTransport,
         directoryOverride: URL? = nil
     ) {
         self.configuration = configuration
@@ -102,54 +85,32 @@ actor UploadQueue {
     // MARK: - Public
 
     /// Tries to send a report immediately.
-    /// - Transient failure → remaining steps are queued to disk, `.queued`.
-    /// - Permanent failure on create → `.rejected` (not written to disk — the same error
-    ///   would just repeat).
-    /// - A permanent attachment failure does not drop the report; the attachment is
-    ///   skipped and the issue still counts as `.sent`.
-    func submit(
-        issueBody: Data,
-        screenshot: Data?,
-        logs: Data?,
-        networkFiles: [CollieAttachment] = []
-    ) async -> CollieSubmitOutcome {
+    /// - Transient failure → the report is queued to disk, `.queued`.
+    /// - Permanent failure → `.rejected` (not written to disk — the same error would just
+    ///   repeat).
+    func submit(reportBody: Data, screenshot: Data?) async -> CollieSubmitOutcome {
         var envelope = Envelope(
             id: UUID().uuidString,
             attempt: 0,
             createdAt: Date(),
             nextAttemptAt: Date(),
-            issueKey: nil,
-            hasScreenshot: screenshot?.isEmpty == false,
-            hasLogs: logs?.isEmpty == false,
-            screenshotDone: false,
-            logsDone: false,
-            networkFiles: networkFiles.map {
-                NetworkFileState(filename: $0.filename, mimeType: $0.mimeType, done: false)
-            }
+            hasScreenshot: screenshot?.isEmpty == false
         )
         let outcome = await perform(
             envelope: &envelope,
-            issueBody: issueBody,
-            screenshot: screenshot,
-            logs: logs,
-            networkFiles: networkFiles
+            reportBody: reportBody,
+            screenshot: screenshot
         )
         switch outcome {
-        case .done(let issueKey):
-            return .sent(issueKey: issueKey)
-        case .createRejected(let reason):
-            diag("Report rejected by Jira with a permanent error: \(reason)")
+        case .done(let reportID):
+            return .sent(reportID: reportID)
+        case .rejected(let reason):
+            diag("Report rejected by the backend with a permanent error: \(reason)")
             return .rejected(reason)
         case .transient(let reason):
             diag("Report could not be sent, queued: \(reason)")
             envelope.nextAttemptAt = Date().addingTimeInterval(configuration.baseRetryDelay)
-            persist(
-                envelope: envelope,
-                issueBody: issueBody,
-                screenshot: screenshot,
-                logs: logs,
-                networkFiles: networkFiles
-            )
+            persist(envelope: envelope, reportBody: reportBody, screenshot: screenshot)
             return .queued
         }
     }
@@ -171,25 +132,21 @@ actor UploadQueue {
                 continue
             }
             guard envelope.nextAttemptAt <= now else { continue }
-            guard let issueBody = readFile(envelope.id, kind: .issue) else {
+            guard let reportBody = readFile(envelope.id, kind: .report) else {
                 remove(envelope); continue
             }
             let screenshot = envelope.hasScreenshot ? readFile(envelope.id, kind: .screenshot) : nil
-            let logs = envelope.hasLogs ? readFile(envelope.id, kind: .logs) : nil
-            let networkFiles = readNetworkFiles(envelope)
 
             let outcome = await perform(
                 envelope: &envelope,
-                issueBody: issueBody,
-                screenshot: screenshot,
-                logs: logs,
-                networkFiles: networkFiles
+                reportBody: reportBody,
+                screenshot: screenshot
             )
             switch outcome {
-            case .done(let issueKey):
-                diag("Queued report sent: \(issueKey)")
+            case .done(let reportID):
+                diag("Queued report sent: \(reportID)")
                 remove(envelope)
-            case .createRejected(let reason):
+            case .rejected(let reason):
                 diag("Queued report dropped with a permanent error: \(reason)")
                 remove(envelope)
             case .transient:
@@ -221,133 +178,49 @@ actor UploadQueue {
         return live
     }
 
-    // MARK: - Step machine (create → screenshot → logs)
+    // MARK: - Single step (upload)
 
-    /// Executes the envelope's remaining steps in order and updates its progress state.
-    /// - Permanent failure on an attachment: the attachment is skipped (`…Done = true`);
-    ///   the issue is not dropped.
+    /// Uploads the report. The envelope id travels as the idempotency key, so a repeat of
+    /// a request the server already accepted resolves to the same report.
     private func perform(
         envelope: inout Envelope,
-        issueBody: Data,
-        screenshot: Data?,
-        logs: Data?,
-        networkFiles: [CollieAttachment]
+        reportBody: Data,
+        screenshot: Data?
     ) async -> StepOutcome {
-        // Step 1 — issue create (only if not already done; duplicate prevention).
-        if envelope.issueKey == nil {
-            switch await transport.createIssue(body: issueBody) {
-            case .success(let key):
-                envelope.issueKey = key
-            case .permanentFailure(let reason):
-                return .createRejected(reason)
-            case .transientFailure(let reason):
-                return .transient(reason)
-            }
+        switch await transport.upload(
+            reportID: envelope.id,
+            envelope: reportBody,
+            screenshot: screenshot
+        ) {
+        case .success(let reportID):
+            return .done(reportID: reportID)
+        case .permanentFailure(let reason):
+            return .rejected(reason)
+        case .transientFailure(let reason):
+            return .transient(reason)
         }
-        guard let issueKey = envelope.issueKey else {
-            return .createRejected("Missing issueKey (unexpected state)")
-        }
-
-        // Step 2 — screenshot attachment.
-        if envelope.hasScreenshot, !envelope.screenshotDone, let screenshot {
-            switch await transport.attach(
-                issueKey: issueKey, data: screenshot,
-                filename: "screenshot.jpg", mimeType: "image/jpeg"
-            ) {
-            case .success:
-                envelope.screenshotDone = true
-            case .permanentFailure(let reason):
-                diag("Screenshot attachment skipped with a permanent error (\(issueKey)): \(reason)")
-                envelope.screenshotDone = true
-            case .transientFailure(let reason):
-                return .transient(reason)
-            }
-        }
-
-        // Step 3 — log JSON attachment.
-        if envelope.hasLogs, !envelope.logsDone, let logs {
-            switch await transport.attach(
-                issueKey: issueKey, data: logs,
-                filename: "collie-logs-\(envelope.id).json", mimeType: "application/json"
-            ) {
-            case .success:
-                envelope.logsDone = true
-            case .permanentFailure(let reason):
-                diag("Log attachment skipped with a permanent error (\(issueKey)): \(reason)")
-                envelope.logsDone = true
-            case .transientFailure(let reason):
-                return .transient(reason)
-            }
-        }
-
-        // Step 4 — one attachment per network request. Progress is tracked per file, so
-        // a transient failure only re-uploads what is still missing.
-        if var states = envelope.networkFiles, !states.isEmpty {
-            for index in states.indices where !states[index].done {
-                guard index < networkFiles.count, !networkFiles[index].data.isEmpty else {
-                    // Payload missing on disk — skip rather than block the report.
-                    states[index].done = true
-                    continue
-                }
-                switch await transport.attach(
-                    issueKey: issueKey, data: networkFiles[index].data,
-                    filename: states[index].filename, mimeType: states[index].mimeType
-                ) {
-                case .success:
-                    states[index].done = true
-                case .permanentFailure(let reason):
-                    diag("Network attachment skipped with a permanent error (\(issueKey), \(states[index].filename)): \(reason)")
-                    states[index].done = true
-                case .transientFailure(let reason):
-                    envelope.networkFiles = states
-                    return .transient(reason)
-                }
-            }
-            envelope.networkFiles = states
-        }
-
-        return .done(issueKey: issueKey)
     }
 
     // MARK: - Disk
 
     private enum FileKind: String {
-        case issue = "issue"
+        case report = "report"
         case screenshot = "screenshot"
-        case logs = "logs"
     }
 
     private func fileURL(_ id: String, kind: FileKind) -> URL {
         directory.appendingPathComponent("\(id).\(kind.rawValue)")
     }
 
-    /// Per-request network payloads are stored one file per request, indexed by their
-    /// position in the envelope's `networkFiles`.
-    private func networkFileURL(_ id: String, index: Int) -> URL {
-        directory.appendingPathComponent("\(id).net-\(index)")
-    }
-
     private func envelopeURL(_ id: String) -> URL {
         directory.appendingPathComponent("\(id).json")
     }
 
-    private func persist(
-        envelope: Envelope,
-        issueBody: Data,
-        screenshot: Data?,
-        logs: Data?,
-        networkFiles: [CollieAttachment]
-    ) {
+    private func persist(envelope: Envelope, reportBody: Data, screenshot: Data?) {
         do {
-            try issueBody.write(to: fileURL(envelope.id, kind: .issue), options: Self.writeOptions)
+            try reportBody.write(to: fileURL(envelope.id, kind: .report), options: Self.writeOptions)
             if envelope.hasScreenshot, let screenshot {
                 try screenshot.write(to: fileURL(envelope.id, kind: .screenshot), options: Self.writeOptions)
-            }
-            if envelope.hasLogs, let logs {
-                try logs.write(to: fileURL(envelope.id, kind: .logs), options: Self.writeOptions)
-            }
-            for (index, file) in networkFiles.enumerated() {
-                try file.data.write(to: networkFileURL(envelope.id, index: index), options: Self.writeOptions)
             }
         } catch {
             remove(envelope)
@@ -365,26 +238,10 @@ actor UploadQueue {
         try? Data(contentsOf: fileURL(id, kind: kind))
     }
 
-    /// Reads the envelope's network payloads back in envelope order. A payload that is
-    /// gone from disk becomes empty data; `perform` skips those instead of blocking the
-    /// report.
-    private func readNetworkFiles(_ envelope: Envelope) -> [CollieAttachment] {
-        (envelope.networkFiles ?? []).enumerated().map { index, state in
-            CollieAttachment(
-                filename: state.filename,
-                mimeType: state.mimeType,
-                data: (try? Data(contentsOf: networkFileURL(envelope.id, index: index))) ?? Data()
-            )
-        }
-    }
-
     private func remove(_ envelope: Envelope) {
         try? fileManager.removeItem(at: envelopeURL(envelope.id))
-        for kind in [FileKind.issue, .screenshot, .logs] {
+        for kind in [FileKind.report, .screenshot] {
             try? fileManager.removeItem(at: fileURL(envelope.id, kind: kind))
-        }
-        for index in (envelope.networkFiles ?? []).indices {
-            try? fileManager.removeItem(at: networkFileURL(envelope.id, index: index))
         }
     }
 

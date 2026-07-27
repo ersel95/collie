@@ -1,5 +1,47 @@
 # Changelog
 
+## 1.0.0 — 2026-07-28
+
+### Changed — BREAKING: the device no longer talks to Jira
+
+Reports now go to the **Collie backend**, and an analyst pushes them to Jira from the
+panel. The device carries no Jira credentials at all, and reports are triaged before they
+reach the tracker.
+
+- **Configuration.** All Jira fields are gone — `jiraBaseURL`, `pat`, `projectKey`,
+  `parentIssueKey`, `subtaskIssueType`, `assigneeUsername`, `defaultLabels`,
+  `maxNetworkAttachments`, `appDisplayName` and the `labels(fromCommaSeparated:)` helper.
+  In their place: `apiBaseURL`, `apiKey`, and the overridable `reportsPath` / `configPath`.
+  Integration keys change accordingly: `COLLIE_JIRA_*` → `COLLIE_API_BASE_URL` +
+  `COLLIE_API_KEY`.
+- **Transport.** `JiraClient` → `IngestionClient`: one multipart `POST` per report
+  (`report` JSON part + optional `screenshot` part, `x-collie-api-key` header) instead of
+  an issue create followed by N attachment uploads.
+- **Payload.** `JiraIssueBuilder` (wiki-markup description) → `ReportEnvelopeBuilder`,
+  which emits the backend's ingestion contract: `app` / `device` / `report` / `entries` /
+  `telemetry`, ISO-8601 dates, no app key (the backend resolves the app from the api-key).
+  Log entries travel raw and lossless; the panel derives the Network and Navigation views
+  the description used to render.
+- **Per-request `net-*.txt` attachments** are no longer built on the device. The panel
+  generates them from the uploaded log stream when pushing to Jira, so the SDK no longer
+  performs one upload per captured request.
+- **Outcome.** `CollieSubmitOutcome.sent(issueKey:)` → `.sent(reportID:)`; the success
+  toast reads "Report sent" instead of naming an issue key.
+
+### Added
+- **Remote kill switch.** At startup Collie calls `GET <configPath>` and honours the
+  app's `captureEnabled` flag from the panel — capture can be turned off without a new
+  build. The check **fails open** when the backend is unreachable, so a tester without
+  VPN can still file a report and have it queued.
+- **Idempotent retries.** The queued report's id travels as `x-collie-idempotency-key`
+  and is reused on every retry, so a response lost in transit cannot produce a second
+  report. This replaces the old "issue already created, resume from the attachment step"
+  duplicate prevention.
+
+### Removed
+- `JiraClient`, `JiraIssueBuilder`, `NetworkAttachmentBuilder` / `CollieAttachment` and
+  their tests. `ReportEnvelopeTests` and `IngestionClientTests` cover the new contract.
+
 ## 0.6.1 — 2026-07-23
 
 ### Fixed

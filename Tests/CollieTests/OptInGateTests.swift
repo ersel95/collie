@@ -13,49 +13,27 @@ final class CollieOptInGateTests: XCTestCase {
         // enabled: false (the default) → configure returns early, no service installed.
         Collie.configure(
             enabled: false,
-            jiraBaseURL: URL(string: "https://jira.example.com")!,
-            pat: "secret",
-            projectKey: "PROJ",
-            parentIssueKey: "PROJ-123",
-            assigneeUsername: "jira.user"
+            apiBaseURL: URL(string: "https://collie.example.com")!,
+            apiKey: "secret"
         )
         XCTAssertFalse(Collie.isConfigured)
         XCTAssertNil(Collie.bugReportService)
     }
 
-    func testEnabledWithEmptyPATIsNoOp() {
+    func testEnabledWithEmptyAPIKeyIsNoOp() {
         Collie.configure(
             enabled: true,
-            jiraBaseURL: URL(string: "https://jira.example.com")!,
-            pat: "   ",
-            projectKey: "PROJ",
-            parentIssueKey: "PROJ-123",
-            assigneeUsername: "jira.user"
+            apiBaseURL: URL(string: "https://collie.example.com")!,
+            apiKey: "   "
         )
         XCTAssertFalse(Collie.isConfigured)
     }
 
-    func testEnabledWithMissingParentKeyIsNoOp() {
-        // Reports are always created as subtasks under a parent; no parent → fail-closed.
+    func testEnabledWithHostlessBaseURLIsNoOp() {
         Collie.configure(
             enabled: true,
-            jiraBaseURL: URL(string: "https://jira.example.com")!,
-            pat: "secret",
-            projectKey: "PROJ",
-            parentIssueKey: "",
-            assigneeUsername: "jira.user"
-        )
-        XCTAssertFalse(Collie.isConfigured)
-    }
-
-    func testEnabledWithMissingAssigneeIsNoOp() {
-        Collie.configure(
-            enabled: true,
-            jiraBaseURL: URL(string: "https://jira.example.com")!,
-            pat: "secret",
-            projectKey: "PROJ",
-            parentIssueKey: "PROJ-123",
-            assigneeUsername: ""
+            apiBaseURL: URL(string: "file:///tmp/collie")!,
+            apiKey: "secret"
         )
         XCTAssertFalse(Collie.isConfigured)
     }
@@ -63,11 +41,8 @@ final class CollieOptInGateTests: XCTestCase {
     func testValidConfigInstallsServiceAndIsIdempotent() {
         Collie.configure(
             enabled: true,
-            jiraBaseURL: URL(string: "https://jira.example.com")!,
-            pat: "secret",
-            projectKey: "PROJ",
-            parentIssueKey: "PROJ-123",
-            assigneeUsername: "jira.user"
+            apiBaseURL: URL(string: "https://collie.example.com")!,
+            apiKey: "secret"
         )
         XCTAssertTrue(Collie.isConfigured)
         let first = Collie.bugReportService
@@ -75,11 +50,8 @@ final class CollieOptInGateTests: XCTestCase {
         // Idempotent: a second configure keeps the first one.
         Collie.configure(
             enabled: true,
-            jiraBaseURL: URL(string: "https://other.example.com")!,
-            pat: "other",
-            projectKey: "OTHER",
-            parentIssueKey: "OTHER-1",
-            assigneeUsername: "other.user"
+            apiBaseURL: URL(string: "https://other.example.com")!,
+            apiKey: "other"
         )
         XCTAssertTrue(Collie.bugReportService === first)
     }

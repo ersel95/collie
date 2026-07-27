@@ -142,8 +142,10 @@ final class BugReportBanner {
                         switch outcome {
                         case .cancelled:
                             break
-                        case .sent(let issueKey):
-                            BugReportToast.show("\(issueKey) created")
+                        case .sent:
+                            // The report now goes to the analyst panel, not straight to
+                            // Jira — so there is no issue key to show yet.
+                            BugReportToast.show("Report sent — thanks!")
                         case .queued:
                             BugReportToast.show("Queued — will be sent once a connection is available")
                         case .switchTool:

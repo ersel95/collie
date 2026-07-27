@@ -1,7 +1,7 @@
 import Foundation
 
-/// The bug reporter's working engine: gathers report data, produces the Jira issue
-/// content, and hands it to the two-step queue (create + attachments).
+/// The bug reporter's working engine: gathers report data, produces the upload envelope,
+/// and hands it to the offline-capable queue.
 ///
 /// The UI (screenshot detector / banner / sheet) uses this service via
 /// `Collie.bugReportService`. The service only exists after a valid
@@ -9,23 +9,33 @@ import Foundation
 public final class BugReportService: @unchecked Sendable {
 
     let configuration: CollieConfiguration
+    private let transport: any ReportTransport
     private let queue: UploadQueue
 
-    /// When Collie was configured — written into every report (description + a
-    /// synthetic "Collie initialized" log entry).
+    /// Server-side switches. Guarded by `stateLock`.
+    private let stateLock = NSLock()
+    private var remoteCaptureEnabled = true
+    private var remoteMaxScreenshotBytes: Int?
+
+    /// When Collie was configured — written into every report as a synthetic
+    /// "Session started" log entry.
     let initializedAt = Date()
 
-    init(configuration: CollieConfiguration, transport: (any JiraTransport)? = nil) {
+    init(configuration: CollieConfiguration, transport: (any ReportTransport)? = nil) {
         self.configuration = configuration
-        let effectiveTransport = transport ?? JiraClient(configuration: configuration)
+        let effectiveTransport = transport ?? IngestionClient(configuration: configuration)
+        self.transport = effectiveTransport
         self.queue = UploadQueue(configuration: configuration, transport: effectiveTransport)
     }
 
     // MARK: - Lifecycle (called from configure)
 
-    /// Attempts to drain the pending queue (once at startup).
+    /// Fetches the server-side kill switch and drains the pending queue (once at startup).
     func bootstrap() {
-        Task { await queue.drain() }
+        Task {
+            await refreshRemoteConfig()
+            await queue.drain()
+        }
     }
 
     /// Attempts to send pending offline reports (e.g. when the app returns to the
@@ -36,14 +46,44 @@ public final class BugReportService: @unchecked Sendable {
 
     // MARK: - Capture gate
 
-    /// Is capture currently active? The old architecture's server-side kill switch
-    /// (`GET /config`) went away with the backend; in v1 the only gate is the local
-    /// opt-in (service exists → on). If a remote kill switch is ever added, this is
-    /// the single place to change.
-    public var isCaptureEnabled: Bool { true }
+    /// Refreshes the server-side switches.
+    ///
+    /// **Fails open on an unreachable backend**: when the config call fails (no VPN,
+    /// offline) the previous value is kept, so a tester can still capture a report and
+    /// have it queued. Only an explicit `captureEnabled: false` from the server turns
+    /// capture off — that is also what an invalid api-key yields (the backend answers
+    /// fail-closed).
+    private func refreshRemoteConfig() async {
+        guard let config = await transport.fetchRemoteConfig() else {
+            diag("Remote config unreachable — keeping the current capture state.")
+            return
+        }
+        apply(config)
+        if !config.captureEnabled {
+            diag("Capture is disabled server-side for this app (kill switch).")
+        }
+    }
 
-    /// Screenshot byte limit.
-    public var maxScreenshotBytes: Int { configuration.maxScreenshotBytes }
+    /// Synchronous so the lock is never held across a suspension point.
+    private func apply(_ config: CollieRemoteConfig) {
+        stateLock.lock(); defer { stateLock.unlock() }
+        remoteCaptureEnabled = config.captureEnabled
+        remoteMaxScreenshotBytes = config.maxScreenshotBytes.flatMap { $0 > 0 ? $0 : nil }
+    }
+
+    /// Is capture currently active? Two gates: the local build-time opt-in (this service
+    /// only exists when that passed) **and** the server-side kill switch.
+    public var isCaptureEnabled: Bool {
+        stateLock.lock(); defer { stateLock.unlock() }
+        return remoteCaptureEnabled
+    }
+
+    /// Screenshot byte limit — the stricter of the local config and the server's value.
+    public var maxScreenshotBytes: Int {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard let remote = remoteMaxScreenshotBytes else { return configuration.maxScreenshotBytes }
+        return min(configuration.maxScreenshotBytes, remote)
+    }
 
     /// JPEG compression quality.
     public var screenshotJPEGQuality: Double { configuration.screenshotJPEGQuality }
@@ -58,8 +98,9 @@ public final class BugReportService: @unchecked Sendable {
 
     // MARK: - Submission
 
-    /// Sends the report to Jira: a subtask is created under the configured parent, and
-    /// the screenshot + log JSON are uploaded as attachments.
+    /// Sends the report to the Collie backend: one multipart upload carrying the JSON
+    /// envelope (app/device/report meta + **all** log entries + telemetry) and the
+    /// screenshot. Triage and the eventual Jira issue happen in the analyst panel.
     ///
     /// - Parameters:
     ///   - whatHappened: The "What happened?" field.
@@ -90,13 +131,13 @@ public final class BugReportService: @unchecked Sendable {
             date: initializedAt,
             level: "info",
             category: "collie",
-            message: "Session started — \(JiraIssueBuilder.dateTimeString(initializedAt))"
+            message: "Session started — \(ReportEnvelopeBuilder.dateTimeString(initializedAt))"
         )
         let insertIndex = entries.firstIndex { $0.date > initializedAt } ?? entries.endIndex
         entries.insert(initEntry, at: insertIndex)
         let sessionID = configuration.sessionIDProvider?() ?? ""
 
-        let context = JiraIssueBuilder.ReportContext(
+        let context = ReportEnvelopeBuilder.ReportContext(
             whatHappened: whatHappened,
             whatExpected: whatExpected,
             testerName: effectiveName,
@@ -108,41 +149,14 @@ public final class BugReportService: @unchecked Sendable {
             entries: entries
         )
 
-        guard let issueBody = try? JiraIssueBuilder.makeCreateBody(
+        guard let reportBody = try? ReportEnvelopeBuilder.makeBody(
             configuration: configuration,
             context: context
         ) else {
-            return .rejected("Could not build the issue body")
+            return .rejected("Could not build the report envelope")
         }
 
-        let logsJSON = entries.isEmpty ? nil : try? Self.encodeLogs(entries)
-
-        // One plain-text file per network request, so a single request can be downloaded
-        // from Jira instead of the whole log JSON. Built from the same deterministic plan
-        // the description's Network table links to.
-        let networkFiles = NetworkAttachmentBuilder.attachments(
-            for: NetworkAttachmentBuilder.plan(
-                entries: entries,
-                limit: configuration.maxNetworkAttachments
-            )
-        )
-
-        return await queue.submit(
-            issueBody: issueBody,
-            screenshot: screenshotJPEG,
-            logs: logsJSON,
-            networkFiles: networkFiles
-        )
-    }
-
-    /// Encodes log entries for the attachment file (`collie-logs-*.json`).
-    /// Pretty-printed with stable key order so the attachment is readable as-is —
-    /// still ALL entries, in full (the description may summarize; this file never does).
-    static func encodeLogs(_ entries: [CollieLogEntry]) throws -> Data {
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.withoutEscapingSlashes, .prettyPrinted, .sortedKeys]
-        return try encoder.encode(entries)
+        return await queue.submit(reportBody: reportBody, screenshot: screenshotJPEG)
     }
 
     func diag(_ message: String) {

@@ -1,21 +1,20 @@
 import Foundation
 
-/// Collie's public facade: screenshot → banner → form → **subtask directly in Jira**.
+/// Collie's public facade: screenshot → banner → form → **report in the analyst panel**.
 /// **OPT-IN, disabled by default.**
 ///
 /// Unless `configure(...)` is called — or when it is called with `enabled: false`
 /// (the default) — **no** detector / network / upload code runs at all.
 ///
+/// The device never talks to Jira: it uploads the report to the Collie backend, where an
+/// analyst triages it and pushes it to Jira from the panel.
+///
 /// ```swift
-/// // Default: off. To enable (all Jira settings come from the host's xcconfig):
+/// // Default: off. To enable (backend settings come from the host's xcconfig):
 /// var config = CollieConfiguration(
 ///     enabled: true,
-///     jiraBaseURL: URL(string: "<JIRA_BASE_URL>")!,
-///     pat: "<PAT>",
-///     projectKey: "PROJ",
-///     parentIssueKey: "PROJ-123",
-///     subtaskIssueType: "Sub-task",
-///     assigneeUsername: "jira.user",
+///     apiBaseURL: URL(string: "<COLLIE_API_BASE_URL>")!,
+///     apiKey: "<COLLIE_API_KEY>",
 ///     environment: "staging"
 /// )
 /// config.logSnapshotProvider = { MyLogger.snapshot().map { ... } }   // optional
@@ -30,22 +29,14 @@ public enum Collie {
     /// Configures the bug reporter. **Default `enabled: false`** → opt-in.
     public static func configure(
         enabled: Bool = false,
-        jiraBaseURL: URL,
-        pat: String = "",
-        projectKey: String = "",
-        parentIssueKey: String = "",
-        subtaskIssueType: String = "Sub-task",
-        assigneeUsername: String = "",
+        apiBaseURL: URL,
+        apiKey: String = "",
         environment: String = "staging"
     ) {
         let config = CollieConfiguration(
             enabled: enabled,
-            jiraBaseURL: jiraBaseURL,
-            pat: pat,
-            projectKey: projectKey,
-            parentIssueKey: parentIssueKey,
-            subtaskIssueType: subtaskIssueType,
-            assigneeUsername: assigneeUsername,
+            apiBaseURL: apiBaseURL,
+            apiKey: apiKey,
             environment: environment
         )
         configure(with: config)
@@ -57,8 +48,8 @@ public enum Collie {
     /// DEFENSE LAYERS (against accidental activation in release builds):
     ///  1. Build-time opt-in (`enabled`): defaults to `false`. Until this gate passes,
     ///     no network/detector/upload code runs (early return below).
-    ///  2. Fail-closed validation: if any required Jira field (pat, projectKey,
-    ///     parentIssueKey, subtaskIssueType, assigneeUsername) is blank, nothing is installed.
+    ///  2. Fail-closed validation: if any required backend field (`apiKey`, `apiBaseURL`,
+    ///     the endpoint paths) is blank, nothing is installed.
     /// The host must never pass a hard-coded `enabled: true` in release builds; the value
     /// must come from xcconfig/secrets (non-prod only).
     ///
@@ -67,7 +58,7 @@ public enum Collie {
         // Gate 1: local opt-in (build-time defense). If off, do nothing.
         guard configuration.enabled else { return }
 
-        // Gate 2: required Jira fields — fail-closed.
+        // Gate 2: required backend fields — fail-closed.
         if let error = configuration.validationError {
             configuration.diagnostics?("[Collie] configure: \(error) — bug reporter not started.")
             return

@@ -1,9 +1,14 @@
 # Collie — Agent Guide
 
 Collie: an SPM bug-reporter package for iOS test builds — shake → banner → form →
-a **subtask directly in Jira**. No backend; the device talks to Jira Server/DC REST v2
-with a PAT. A screenshot is captured automatically at shake time and attached, together
-with a full log JSON fed from the host's logging library (any source).
+**a report in the analyst panel**. The device uploads to the Collie backend in one
+multipart request; an analyst triages it there and pushes it to Jira from the panel,
+choosing the issue type, parent, assignee and labels. A screenshot is captured
+automatically at shake time and uploaded with the report, together with the full log
+stream fed from the host's logging library (any source).
+
+**The device never talks to Jira.** No PAT, project key, parent key or assignee exists
+on the device — those decisions belong to the panel.
 
 ## Where to start, by task
 
@@ -23,14 +28,13 @@ Ordered steps — all required:
    - Package added via Package.swift: `.build/checkouts/collie/Integration/CollieIntegration.swift`
    - Or fetch it directly: `https://raw.githubusercontent.com/ersel95/collie/main/Integration/CollieIntegration.swift`
 3. **Provide the keys** (xcconfig → Info.plist chain; values NEVER enter the repo):
-   `COLLIE_ENABLED`, `COLLIE_JIRA_BASE_URL`, `COLLIE_JIRA_PAT`,
-   `COLLIE_JIRA_PROJECT_KEY`, `COLLIE_JIRA_PARENT_KEY` (the parent task reports are
-   created under), `COLLIE_JIRA_SUBTASK_TYPE` (the actual subtask type name in Jira),
-   `COLLIE_JIRA_ASSIGNEE` (the user every subtask is assigned to),
-   `COLLIE_JIRA_LABELS` (optional, comma-separated issue labels), `COLLIE_ENVIRONMENT`.
+   `COLLIE_ENABLED`, `COLLIE_API_BASE_URL` (the Collie backend root),
+   `COLLIE_API_KEY` (the app's ingestion api-key, created on the panel's
+   Admin · Apps page — it both identifies the app and authenticates the upload),
+   `COLLIE_ENVIRONMENT`.
    The Info.plist mapping is ready in the comment at the top of the template.
-   ⚠️ In release/prod configs `COLLIE_ENABLED` is undefined or `NO`; the PAT lives only
-   in non-prod secrets.
+   ⚠️ In release/prod configs `COLLIE_ENABLED` is undefined or `NO`; the api-key lives
+   only in non-prod secrets.
 4. **Start:** call `CollieIntegration.start()` at app startup (after the host's logging
    library, if logs are fed from one).
 5. **Feed logs (recommended):** Collie is log-source agnostic — map any logger's
@@ -47,16 +51,16 @@ Ordered steps — all required:
 7. **Verify:**
    - Shake the device (simulator: Device → Shake, ⌃⌘Z) → the banner must appear (the
      report sheet directly, when `asksBeforeReporting` is `false`); submit
-     the form → a subtask must exist in Jira under `COLLIE_JIRA_PARENT_KEY` with
-     `screenshot.jpg` + `collie-logs-*.json` + one `net-*.txt` per captured network
-     request as attachments, and the correct assignee.
+     the form → the report must show up in the panel's Reports list with its screenshot,
+     the full log stream, and the derived network/navigation views.
    - If the banner doesn't appear: check the `config.diagnostics` output — when a
-     required field is blank, Collie stays silently off (fail-closed).
-   - Corporate Jira is reachable only over VPN; without VPN a submission becomes
-     "Queued" and is retried via `Collie.flushPendingUploads()`.
+     required field is blank, Collie stays silently off (fail-closed). The banner also
+     stays hidden when the panel has flipped the app's `captureEnabled` kill switch off.
+   - A corporate backend is often reachable only over VPN; without VPN a submission
+     becomes "Queued" and is retried via `Collie.flushPendingUploads()`.
 
-Common errors are in the table in `INTEGRATION.md` §7 (401 → PAT, 400 → parent/subtask
-type name).
+Common errors are in the table in `INTEGRATION.md` §7 (401 → api-key, 400 → payload
+validation).
 
 ## Development (this repo)
 
@@ -65,29 +69,34 @@ type name).
 - Tests: `swift test` (runs on macOS). iOS compile check:
   `swift build --triple arm64-apple-ios17.0-simulator --sdk $(xcrun --sdk iphonesimulator --show-sdk-path)`
 - Behaviors that MUST be preserved (do not make breaking changes):
-  - Opt-in + fail-closed: `enabled` defaults to `false`; a blank required Jira field
-    means nothing is installed.
-  - Recursion prevention: `JiraClient` uses its own session with `protocolClasses = []`.
-  - Queue duplicate prevention: after a create, `issueKey` is written to the envelope;
-    a retry never repeats the create (`UploadQueueTests` locks this in).
-  - `parent` + `assignee` are set from the config on every issue (a report is always a
-    subtask).
+  - Opt-in + fail-closed: `enabled` defaults to `false`; a blank required field
+    (`apiKey`, `apiBaseURL`, endpoint paths) means nothing is installed.
+  - Two capture gates: the local build-time opt-in **and** the server-side kill switch
+    (`GET <configPath>` → `captureEnabled`). The remote check **fails open** on an
+    unreachable backend — a tester without VPN must still be able to file a report and
+    have it queued.
+  - Recursion prevention: `IngestionClient` uses its own session with `protocolClasses = []`.
+  - Queue idempotency: the envelope id travels as the `x-collie-idempotency-key` header
+    and is reused on every retry, so a response lost in transit cannot create a second
+    report (`UploadQueueTests` locks this in).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
-  - ALL provided log entries are attached to the issue in full (the description may
-    summarize/truncate, the JSON attachment never does — and neither do the per-request
-    `net-*.txt` files).
-  - Network attachment names are deterministic: the description is written *before* the
-    files are uploaded and links to them by name, so `NetworkAttachmentBuilder.plan`
-    (ordering + naming) and `JiraIssueBuilder.formatNetwork` must stay in sync.
+  - ALL provided log entries are uploaded in full, with their categories preserved and
+    nothing summarized or truncated — the panel derives its network/navigation views
+    from that raw stream, so it must stay lossless.
+  - The upload envelope is the backend's ingestion contract
+    (`ReportEnvelopeBuilder`): `app` / `device` / `report` / `entries` / `telemetry`,
+    ISO-8601 dates, and **no app key** (the backend resolves the app from the api-key).
+    `ReportEnvelopeTests` locks the shape in.
   - Core stays log-source agnostic: no logging-library types or names in `Sources/`
     (concrete bridges live only in docs and the integration template).
   - No PII (IP/SSID/location) is ever added to telemetry.
-- Jira assumption: Server/DC (REST v2, PAT Bearer, `assignee.name`, wiki markup).
-  Cloud (v3/ADF) is out of scope; if added, isolate it inside
-  `JiraClient`/`JiraIssueBuilder`.
+- Backend assumption: the Collie panel's ingestion API — `POST <reportsPath>`
+  (multipart: `report` JSON part + optional `screenshot` part, `x-collie-api-key`
+  header) and `GET <configPath>`. Both paths are overridable via
+  `CollieConfiguration` so a host can point at a differently mounted deployment.
 - Language: all code comments, docs, and commit messages are in English.
 - Releasing: add a `## <version> — <date>` section to `CHANGELOG.md`, commit, then
   `git tag <version> && git push origin <version>` (plain semver, no `v` prefix).

@@ -3,15 +3,11 @@ import XCTest
 
 final class CollieConfigurationTests: XCTestCase {
 
-    private func makeConfig(baseURLString: String = "https://jira.example.com") -> CollieConfiguration {
+    private func makeConfig(baseURLString: String = "https://collie.example.com") -> CollieConfiguration {
         CollieConfiguration(
             enabled: true,
-            jiraBaseURL: URL(string: baseURLString)!,
-            pat: "secret",
-            projectKey: "PROJ",
-            parentIssueKey: "PROJ-123",
-            subtaskIssueType: "Sub-task",
-            assigneeUsername: "jira.user",
+            apiBaseURL: URL(string: baseURLString)!,
+            apiKey: "secret",
             environment: "staging"
         )
     }
@@ -32,30 +28,38 @@ final class CollieConfigurationTests: XCTestCase {
 
     // MARK: - URL construction
 
-    func testIssueCreateURL() {
-        let config = makeConfig()
-        XCTAssertEqual(config.issueCreateURL.absoluteString, "https://jira.example.com/rest/api/2/issue")
-    }
-
-    func testIssueCreateURLHandlesTrailingSlashBase() {
-        let config = makeConfig(baseURLString: "https://jira.example.com/")
-        XCTAssertEqual(config.issueCreateURL.absoluteString, "https://jira.example.com/rest/api/2/issue")
-    }
-
-    func testAttachmentsURL() {
+    func testReportsURL() {
         let config = makeConfig()
         XCTAssertEqual(
-            config.attachmentsURL(issueKey: "PROJ-456").absoluteString,
-            "https://jira.example.com/rest/api/2/issue/PROJ-456/attachments"
+            config.reportsURL.absoluteString,
+            "https://collie.example.com/api/v1/collie/reports"
         )
     }
 
-    func testBrowseURL() {
+    func testReportsURLHandlesTrailingSlashBase() {
+        let config = makeConfig(baseURLString: "https://collie.example.com/")
+        XCTAssertEqual(
+            config.reportsURL.absoluteString,
+            "https://collie.example.com/api/v1/collie/reports"
+        )
+    }
+
+    func testConfigURL() {
         let config = makeConfig()
         XCTAssertEqual(
-            config.browseURL(issueKey: "PROJ-456").absoluteString,
-            "https://jira.example.com/browse/PROJ-456"
+            config.configURL.absoluteString,
+            "https://collie.example.com/api/v1/collie/config"
         )
+    }
+
+    /// The endpoint paths are overridable so a host can point at a differently mounted
+    /// backend without waiting for an SDK release.
+    func testCustomPathsAreHonoured() {
+        var config = makeConfig()
+        config.reportsPath = "/ingest/reports"
+        config.configPath = "config"
+        XCTAssertEqual(config.reportsURL.absoluteString, "https://collie.example.com/ingest/reports")
+        XCTAssertEqual(config.configURL.absoluteString, "https://collie.example.com/config")
     }
 
     // MARK: - Validation (fail-closed)
@@ -64,49 +68,43 @@ final class CollieConfigurationTests: XCTestCase {
         XCTAssertNil(makeConfig().validationError)
     }
 
-    func testMissingPATFailsValidation() {
+    func testMissingAPIKeyFailsValidation() {
         var config = makeConfig()
-        config.pat = "   "
+        config.apiKey = "   "
         XCTAssertNotNil(config.validationError)
     }
 
-    func testMissingProjectKeyFailsValidation() {
+    func testBaseURLWithoutHostFailsValidation() {
         var config = makeConfig()
-        config.projectKey = ""
+        config.apiBaseURL = URL(string: "file:///tmp/nope")!
         XCTAssertNotNil(config.validationError)
     }
 
-    func testMissingParentIssueKeyFailsValidation() {
+    func testBlankReportsPathFailsValidation() {
         var config = makeConfig()
-        config.parentIssueKey = ""
+        config.reportsPath = " "
         XCTAssertNotNil(config.validationError)
     }
 
-    func testMissingAssigneeFailsValidation() {
+    func testBlankConfigPathFailsValidation() {
         var config = makeConfig()
-        config.assigneeUsername = ""
-        XCTAssertNotNil(config.validationError)
-    }
-
-    func testMissingSubtaskTypeFailsValidation() {
-        var config = makeConfig()
-        config.subtaskIssueType = " "
+        config.configPath = ""
         XCTAssertNotNil(config.validationError)
     }
 
     // MARK: - Capture exclusion
 
-    func testCaptureExclusionFragmentsContainHostAndRestPath() {
+    func testCaptureExclusionFragmentsContainHostAndIngestionPath() {
         let fragments = makeConfig().captureExclusionFragments
-        XCTAssertTrue(fragments.contains("jira.example.com"))
-        XCTAssertTrue(fragments.contains("/rest/api/2/issue"))
+        XCTAssertTrue(fragments.contains("collie.example.com"))
+        XCTAssertTrue(fragments.contains("/api/v1/collie/reports"))
     }
 
     // MARK: - Bounds
 
     func testScreenshotQualityClamped() {
         let config = CollieConfiguration(
-            jiraBaseURL: URL(string: "https://x.example.com")!,
+            apiBaseURL: URL(string: "https://x.example.com")!,
             screenshotJPEGQuality: 5
         )
         XCTAssertLessThanOrEqual(config.screenshotJPEGQuality, 1)
@@ -115,7 +113,7 @@ final class CollieConfigurationTests: XCTestCase {
 
     func testNegativeRetrySettingsClamped() {
         let config = CollieConfiguration(
-            jiraBaseURL: URL(string: "https://x.example.com")!,
+            apiBaseURL: URL(string: "https://x.example.com")!,
             requestTimeout: -5,
             maxRetryCount: -3,
             baseRetryDelay: -1,
@@ -125,14 +123,5 @@ final class CollieConfigurationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(config.maxRetryCount, 0)
         XCTAssertGreaterThanOrEqual(config.baseRetryDelay, 0)
         XCTAssertGreaterThanOrEqual(config.maxScreenshotBytes, 0)
-    }
-
-    func testLabelsParsedFromCommaSeparatedValue() {
-        XCTAssertEqual(
-            CollieConfiguration.labels(fromCommaSeparated: " collie, ios report ,,uat "),
-            ["collie", "ios-report", "uat"]
-        )
-        XCTAssertEqual(CollieConfiguration.labels(fromCommaSeparated: nil), [])
-        XCTAssertEqual(CollieConfiguration.labels(fromCommaSeparated: "  "), [])
     }
 }

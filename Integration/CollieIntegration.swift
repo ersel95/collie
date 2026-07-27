@@ -6,33 +6,28 @@
 //  Setup:
 //  1. Copy this file into your host project.
 //  2. Provide the keys below via the xcconfig → Info.plist chain (the values never
-//     enter the repo; in particular COLLIE_JIRA_PAT lives only in non-prod
+//     enter the repo; in particular COLLIE_API_KEY lives only in non-prod
 //     xcconfig/secrets):
 //
 //     // Secrets-NonProd.xcconfig (not committed to git)
 //     COLLIE_ENABLED = YES
-//     COLLIE_JIRA_BASE_URL = https:/$()/jira.example.com
-//     COLLIE_JIRA_PAT = <personal-access-token>
-//     COLLIE_JIRA_PROJECT_KEY = PROJ
-//     COLLIE_JIRA_PARENT_KEY = PROJ-123
-//     COLLIE_JIRA_SUBTASK_TYPE = Sub-task
-//     COLLIE_JIRA_ASSIGNEE = jira.username
-//     COLLIE_JIRA_LABELS = collie,ios-report        // optional, comma-separated
+//     COLLIE_API_BASE_URL = https:/$()/collie-api.example.com
+//     COLLIE_API_KEY = <ingestion-api-key from the panel's Admin · Apps page>
 //     COLLIE_ENVIRONMENT = staging
 //
 //     // Corresponding Info.plist entries (resolved through Build Settings):
 //     <key>CollieEnabled</key><string>$(COLLIE_ENABLED)</string>
-//     <key>CollieJiraBaseURL</key><string>$(COLLIE_JIRA_BASE_URL)</string>
-//     <key>CollieJiraPAT</key><string>$(COLLIE_JIRA_PAT)</string>
-//     <key>CollieJiraProjectKey</key><string>$(COLLIE_JIRA_PROJECT_KEY)</string>
-//     <key>CollieJiraParentKey</key><string>$(COLLIE_JIRA_PARENT_KEY)</string>
-//     <key>CollieJiraSubtaskType</key><string>$(COLLIE_JIRA_SUBTASK_TYPE)</string>
-//     <key>CollieJiraAssignee</key><string>$(COLLIE_JIRA_ASSIGNEE)</string>
-//     <key>CollieJiraLabels</key><string>$(COLLIE_JIRA_LABELS)</string>
+//     <key>CollieApiBaseURL</key><string>$(COLLIE_API_BASE_URL)</string>
+//     <key>CollieApiKey</key><string>$(COLLIE_API_KEY)</string>
 //     <key>CollieEnvironment</key><string>$(COLLIE_ENVIRONMENT)</string>
 //
 //  3. Call `CollieIntegration.start()` at app startup (after your logging library, if
 //     you feed logs from one).
+//
+//  Where reports go: the device uploads to the Collie backend — it never talks to Jira.
+//  An analyst reviews the report in the panel and pushes it to Jira from there, choosing
+//  the issue type, parent, assignee and labels. So no Jira project/parent/assignee/PAT
+//  settings exist on the device any more.
 //
 
 import Foundation
@@ -52,20 +47,15 @@ enum CollieIntegration {
         // Local opt-in gate: if the key is missing/NO, Collie never runs (fail-closed).
         let enabled = (plist("CollieEnabled") as NSString?)?.boolValue ?? false
         guard enabled,
-              let baseURLString = plist("CollieJiraBaseURL"),
+              let baseURLString = plist("CollieApiBaseURL"),
               let baseURL = URL(string: baseURLString) else {
             return
         }
 
         var config = CollieConfiguration(
             enabled: true,
-            jiraBaseURL: baseURL,
-            pat: plist("CollieJiraPAT") ?? "",
-            projectKey: plist("CollieJiraProjectKey") ?? "",
-            parentIssueKey: plist("CollieJiraParentKey") ?? "",
-            subtaskIssueType: plist("CollieJiraSubtaskType") ?? "Sub-task",
-            assigneeUsername: plist("CollieJiraAssignee") ?? "",
-            defaultLabels: CollieConfiguration.labels(fromCommaSeparated: plist("CollieJiraLabels")),
+            apiBaseURL: baseURL,
+            apiKey: plist("CollieApiKey") ?? "",
             environment: plist("CollieEnvironment") ?? "staging"
         )
 
@@ -77,16 +67,14 @@ enum CollieIntegration {
         // ── Log source (optional but recommended) ────────────────────────────────────
         //
         // Collie is log-source agnostic: map ANY logger's snapshot (Olaf, Netfox,
-        // Pulse, os_log, your own) to [CollieLogEntry]. ALL entries are attached to the
-        // Jira issue as collie-logs JSON; network/navigation entries also feed the
-        // issue description (see the metadata key convention in CollieLogEntry docs).
-        // Each network request is additionally attached as its own net-*.txt file,
-        // linked from the description's Network table (cap: config.maxNetworkAttachments,
-        // default 50 — set it to 0 to turn per-request files off).
+        // Pulse, os_log, your own) to [CollieLogEntry]. ALL entries are uploaded with the
+        // report, in full, with their categories preserved — the panel derives its
+        // network and navigation views from them (see the metadata key convention in the
+        // CollieLogEntry docs) and the analyst can attach them to the Jira issue.
         //
         // Signed-in account: log a "customerNo" metadata key on every sign-in path
-        // (LoginView, RememberMeLoginView, biometric re-login…) and the report's
-        // Report table gets a "Customer no" row with the newest value. With Olaf:
+        // (LoginView, RememberMeLoginView, biometric re-login…) so the panel can show
+        // which account was signed in. With Olaf:
         // Olaf.info("Signed in", category: .auth, metadata: ["customerNo": customerNo])
         //
         // Ready-made Olaf bridge — uncomment if your app uses Olaf:
@@ -105,8 +93,8 @@ enum CollieIntegration {
         // config.diagnostics = { Olaf.info($0) }
         //
         // Recursion prevention: if your logger captures network traffic, exclude
-        // Collie's Jira endpoints from its capture. (Collie's own session carries no
-        // capture protocol — this is the 2nd safeguard.) With Olaf:
+        // Collie's own endpoints from its capture. (Collie's session carries no capture
+        // protocol — this is the 2nd safeguard.) With Olaf:
         // OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + [...])
 
         Collie.configure(with: config)

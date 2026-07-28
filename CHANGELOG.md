@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.0 — 2026-07-28
+
+### Changed
+- **Documentation now covers the Firebase transport.** `CollieFirebase` shipped in 1.1.0,
+  but every integration document still described only the HTTPS upload — so anyone
+  following them (or any agent reading them) wired up keys the Firebase path does not
+  use and never set the one it needs. `Integration/CollieIntegration.swift`,
+  `INTEGRATION.md`, `AGENTS.md` and `README.md` now present both transports side by side:
+  which one to pick, the keys each requires (`COLLIE_APP_KEY` vs
+  `COLLIE_API_BASE_URL` + `COLLIE_API_KEY`), the Firebase prerequisites, the
+  screenshot-in-Firestore constraint and the matching troubleshooting rows.
+
 ## 1.4.0 — 2026-07-28
 
 ### Changed

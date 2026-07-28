@@ -1,20 +1,34 @@
 # Collie Integration Guide
 
-## 1. Add the package
+## 1. Choose a transport, then add the package
 
-Xcode → Package Dependencies → Collie repo URL → add `Collie` to the host app target.
+Collie can deliver a report two ways — pick the one your app's network policy allows:
+
+| | **Firebase** (`CollieFirebase`) | **HTTPS** (core `Collie`) |
+|---|---|---|
+| Report goes to | Firestore, then a server-side bridge | one multipart POST to the Collie backend |
+| Use when | the app may only reach a fixed set of hosts (e.g. a banking app allowed to talk to Firebase and its own API) | the device can reach your backend directly |
+| Needs | `GoogleService-Info.plist` + `FirebaseApp.configure()` | an ingestion api-key |
+| Config keys | `COLLIE_APP_KEY` | `COLLIE_API_BASE_URL` + `COLLIE_API_KEY` |
+
+Both paths end in the same place: an analyst reviews the report in the panel and pushes
+it to Jira.
+
+Xcode → Package Dependencies → Collie repo URL → add the product you need to the host app
+target: **`CollieFirebase`** for the Firebase path (it brings `Collie` with it), or
+**`Collie`** alone for the HTTPS path.
 
 ## 2. Backend prerequisites
 
-Collie uploads reports to the Collie backend; analysts triage them in the panel and push
-them to Jira from there. **Nothing Jira-related is configured on the device.**
+Analysts triage reports in the panel and push them to Jira from there. **Nothing
+Jira-related is configured on the device.**
 
 | Requirement | Description |
 |---|---|
-| Collie backend | A reachable deployment; its root URL becomes `COLLIE_API_BASE_URL` |
 | App record | Create the app on the panel's **Admin · Apps** page. Its Jira project, default issue type, retention and the `captureEnabled` kill switch live there |
-| Ingestion api-key | Generated with the app record and **shown once** — it identifies the app *and* authenticates uploads. Rotate it from the same page |
-| Network | A corporate backend is usually reachable only over VPN; without it reports queue on the device |
+| **App key** | The record's `key` (e.g. `ykb-nl-test`). Names the app on every report — this is what the Firebase path needs. Not a secret |
+| Ingestion api-key | Generated with the app record and **shown once**. Only the HTTPS path uses it; rotate it from the same page |
+| Firebase (Firebase path) | The app must already be a Firebase app: `GoogleService-Info.plist` in the target and `FirebaseApp.configure()` before Collie starts. Security rules in `Integration/firestore.rules` |
 
 ## 3. xcconfig / Info.plist keys
 
@@ -22,14 +36,22 @@ The values **never enter the repo** — they live in non-prod xcconfig/secrets. 
 `Integration/CollieIntegration.swift` template for the key list and the Info.plist
 mapping:
 
-`COLLIE_ENABLED`, `COLLIE_API_BASE_URL`, `COLLIE_API_KEY`, `COLLIE_ENVIRONMENT`
+**Firebase path:** `COLLIE_ENABLED`, `COLLIE_APP_KEY`
+**HTTPS path:** `COLLIE_ENABLED`, `COLLIE_API_BASE_URL`, `COLLIE_API_KEY`
+
+`COLLIE_APP_KEY` is **not** a secret — it can be read out of the app bundle, and write
+access is enforced by Firestore rules. The ingestion api-key **is** a secret.
 
 > ⚠️ `COLLIE_ENABLED` is not defined (or is `NO`) in release/prod xcconfig. Collie is
 > fail-closed: when the key is missing, none of its code runs.
 
-If your deployment mounts the API somewhere other than the default
-(`/api/v1/collie/reports` and `/api/v1/collie/config`), override
-`config.reportsPath` / `config.configPath` before calling `Collie.configure`.
+On the HTTPS path, if your deployment mounts the API somewhere other than the default
+(`/api/v1/collie/reports` and `/api/v1/collie/config`), override `config.reportsPath` /
+`config.configPath` before calling `Collie.configure`.
+
+On the Firebase path the collections are configurable the same way — see
+`FirestoreTransport.Configuration` (`collection`, `screenshotCollection`,
+`configCollection`).
 
 ## 4. Startup
 
@@ -92,12 +114,15 @@ record's fields.
 
 ### Recursion prevention (if your logger captures network traffic)
 
-Exclude Collie's own endpoints from your capture tool, e.g. with Olaf:
+Exclude Collie's destination from your capture tool. On the Firebase path that is the
+Firebase hosts; on the HTTPS path use `config.captureExclusionFragments`:
 
 ```swift
-OlafNetworkConfiguration(
-    excludedURLs: config.captureExclusionFragments + existingList
-)
+// Firebase path
+OlafNetworkConfiguration(excludedURLs: ["firestore.googleapis.com"] + existingList)
+
+// HTTPS path
+OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + existingList)
 ```
 
 Note: Collie's own `URLSession` carries no capture protocol (primary safeguard); this
@@ -123,14 +148,22 @@ Shake behavior is independent of the handler: `config.asksBeforeReporting` (defa
 `true`) decides whether a shake raises the "Spotted a problem?" yes/no banner first or
 opens the report sheet directly (`false`).
 
-## 6. Offline / VPN behavior
+## 6. Offline behavior
 
-- When the backend is unreachable (no VPN, network error, 5xx) the report is **queued to
-  disk** (`Caches/Collie/uploads/`, encrypted with `.completeFileProtection` on iOS) and
-  retried with exponential backoff (default 5 attempts, 48-hour TTL).
-- A retry **cannot create a duplicate report**: the queue reuses the report's original id
-  as an idempotency key (`x-collie-idempotency-key`), so even a response lost in transit
-  resolves to the same report server-side.
+- When the destination is unreachable the report is **queued to disk**
+  (`Caches/Collie/uploads/`, encrypted with `.completeFileProtection` on iOS) and retried
+  with exponential backoff (default 5 attempts, 48-hour TTL).
+- A retry **cannot create a duplicate report**. On the HTTPS path the queue reuses the
+  report's id as `x-collie-idempotency-key`; on the Firebase path that same id is the
+  Firestore *document id*, so a retry overwrites the same document.
+
+### Screenshots on the Firebase path
+
+Cloud Storage requires a paid Firebase plan, so the JPEG is base64-encoded into its own
+Firestore document (`collie_report_screenshots/<reportId>`) instead. Firestore caps a
+document at 1 MiB, so `FirestoreTransport.Configuration.maxScreenshotBytes` (650 KB)
+bounds the raw image; a larger one is dropped — with the reason recorded on the report —
+rather than failing the whole submission.
 - The queue is retried automatically at app startup. To also retry on returning to the
   foreground:
   ```swift
@@ -152,7 +185,9 @@ turns capture off.
 
 | Symptom | Cause / fix |
 |---|---|
-| Banner never appears on shake | `COLLIE_ENABLED` is NO/missing, or `COLLIE_API_KEY`/`COLLIE_API_BASE_URL` is blank (fail-closed). Check the `config.diagnostics` output. In the simulator use Device → Shake (⌃⌘Z) |
+| Banner never appears on shake | `COLLIE_ENABLED` is NO/missing, or the transport's required key is blank — `COLLIE_APP_KEY` (Firebase) / `COLLIE_API_KEY` + `COLLIE_API_BASE_URL` (HTTPS). Fail-closed. Check `config.diagnostics`. In the simulator use Device → Shake (⌃⌘Z) |
+| Report never reaches the panel (Firebase) | The app key must match the panel's app record exactly — a mismatch is recorded as `bridgeError: Unknown appKey` on the Firestore document |
+| "Could not write the report: PERMISSION_DENIED" | Firestore security rules reject the write; see `Integration/firestore.rules` |
 | Banner disappeared after working before | The app's `captureEnabled` kill switch was turned off in the panel (§7) |
 | "api-key is invalid or disabled (401)" | The api-key is wrong or was rotated — copy the current one from Admin · Apps |
 | HTTP 400 with a validation message | The payload was rejected (e.g. too many log entries). The message carries the backend's reason |

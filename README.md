@@ -4,9 +4,14 @@
 
 Collie is a bug-reporter SDK for iOS test builds: when a tester shakes the device, a
 bubble slides in from the bottom ("Want to share it?"), a short form is filled out, and
-the report is uploaded to the **Collie backend** in a single multipart request. Analysts
-review it in the panel — screenshot, full log stream, network and navigation views — and
-push it to Jira from there, choosing the issue type, parent, assignee and labels.
+the report is uploaded. Analysts review it in the panel — screenshot, full log stream,
+network and navigation views — and push it to Jira from there, choosing the issue type,
+parent, assignee and labels.
+
+**Two ways to deliver a report.** The core library POSTs it to your own backend. The
+optional **`CollieFirebase`** product writes it to Firestore instead, for apps whose
+network policy only permits a fixed set of hosts — a server-side bridge feeds those
+reports into the same panel. Only that product pulls in `firebase-ios-sdk`.
 
 ```
 Tester shakes the device
@@ -60,7 +65,7 @@ right person.
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/ersel95/collie.git", from: "1.0.0")
+    .package(url: "https://github.com/ersel95/collie.git", from: "1.5.0")
 ]
 ```
 
@@ -87,6 +92,13 @@ config.logSnapshotProvider = {
 config.sessionIDProvider = { Olaf.currentSessionID }
 
 Collie.configure(with: config)
+
+// Firebase instead of HTTPS — link the CollieFirebase product and pass a transport:
+// import CollieFirebase
+// Collie.configure(
+//     with: config,
+//     transport: FirestoreTransport(configuration: .init(appKey: "<app key>"))
+// )
 ```
 
 The api-key comes from the panel's **Admin · Apps** page, where the app's Jira project,

@@ -1,11 +1,17 @@
 # Collie — Agent Guide
 
 Collie: an SPM bug-reporter package for iOS test builds — shake → banner → form →
-**a report in the analyst panel**. The device uploads to the Collie backend in one
-multipart request; an analyst triages it there and pushes it to Jira from the panel,
+**a report in the analyst panel**. An analyst triages it there and pushes it to Jira,
 choosing the issue type, parent, assignee and labels. A screenshot is captured
 automatically at shake time and uploaded with the report, together with the full log
 stream fed from the host's logging library (any source).
+
+**Two transports, one destination.** `Collie` uploads over plain HTTPS
+(`IngestionClient`); the separate **`CollieFirebase`** product writes to Firestore
+(`FirestoreTransport`) for hosts whose network policy only allows Firebase — a
+server-side bridge then moves those reports into the same panel. The host picks one via
+`Collie.configure(with:transport:)`. Only `CollieFirebase` depends on `firebase-ios-sdk`;
+the core stays dependency-free.
 
 **The device never talks to Jira.** No PAT, project key, parent key or assignee exists
 on the device — those decisions belong to the panel.
@@ -27,11 +33,11 @@ Ordered steps — all required:
    - Package added via Xcode: `~/Library/Developer/Xcode/DerivedData/<App>-*/SourcePackages/checkouts/collie/Integration/CollieIntegration.swift`
    - Package added via Package.swift: `.build/checkouts/collie/Integration/CollieIntegration.swift`
    - Or fetch it directly: `https://raw.githubusercontent.com/ersel95/collie/main/Integration/CollieIntegration.swift`
-3. **Provide the keys** (xcconfig → Info.plist chain; values NEVER enter the repo):
-   `COLLIE_ENABLED`, `COLLIE_API_BASE_URL` (the Collie backend root),
-   `COLLIE_API_KEY` (the app's ingestion api-key, created on the panel's
-   Admin · Apps page — it both identifies the app and authenticates the upload),
-   `COLLIE_ENVIRONMENT`.
+3. **Provide the keys** (xcconfig → Info.plist chain; secrets NEVER enter the repo):
+   - Firebase path: `COLLIE_ENABLED`, `COLLIE_APP_KEY` (the app record's `key` from
+     Admin · Apps — **not** a secret; write access is enforced by Firestore rules).
+     Requires `GoogleService-Info.plist` and `FirebaseApp.configure()` before Collie starts.
+   - HTTPS path: `COLLIE_ENABLED`, `COLLIE_API_BASE_URL`, `COLLIE_API_KEY` (a real secret).
    The Info.plist mapping is ready in the comment at the top of the template.
    ⚠️ In release/prod configs `COLLIE_ENABLED` is undefined or `NO`; the api-key lives
    only in non-prod secrets.
@@ -72,13 +78,13 @@ validation).
   - Opt-in + fail-closed: `enabled` defaults to `false`; a blank required field
     (`apiKey`, `apiBaseURL`, endpoint paths) means nothing is installed.
   - Two capture gates: the local build-time opt-in **and** the server-side kill switch
-    (`GET <configPath>` → `captureEnabled`). The remote check **fails open** on an
-    unreachable backend — a tester without VPN must still be able to file a report and
-    have it queued.
+    (HTTPS: `GET <configPath>`; Firebase: `collie_config/<appKey>.captureEnabled`). The
+    remote check **fails open** when unreachable — a tester offline must still be able to
+    file a report and have it queued.
   - Recursion prevention: `IngestionClient` uses its own session with `protocolClasses = []`.
-  - Queue idempotency: the envelope id travels as the `x-collie-idempotency-key` header
-    and is reused on every retry, so a response lost in transit cannot create a second
-    report (`UploadQueueTests` locks this in).
+  - Queue idempotency: the envelope id is reused on every retry — as the
+    `x-collie-idempotency-key` header (HTTPS) or as the Firestore document id (Firebase) —
+    so a response lost in transit cannot create a second report (`UploadQueueTests`).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
@@ -93,10 +99,15 @@ validation).
   - Core stays log-source agnostic: no logging-library types or names in `Sources/`
     (concrete bridges live only in docs and the integration template).
   - No PII (IP/SSID/location) is ever added to telemetry.
-- Backend assumption: the Collie panel's ingestion API — `POST <reportsPath>`
-  (multipart: `report` JSON part + optional `screenshot` part, `x-collie-api-key`
-  header) and `GET <configPath>`. Both paths are overridable via
-  `CollieConfiguration` so a host can point at a differently mounted deployment.
+- Backend assumptions:
+  - HTTPS — `POST <reportsPath>` (multipart: `report` JSON part + optional `screenshot`
+    part, `x-collie-api-key` header) and `GET <configPath>`; both overridable via
+    `CollieConfiguration`.
+  - Firebase — `collie_reports/<reportId>` (envelope decoded, plus `appKey`, `status`,
+    `hasScreenshot`), the screenshot base64 in `collie_report_screenshots/<reportId>`
+    (Cloud Storage needs a paid plan, so it is NOT used), and the kill switch in
+    `collie_config/<appKey>`. Collections are overridable via
+    `FirestoreTransport.Configuration`. Rule templates: `Integration/firestore.rules`.
 - Language: all code comments, docs, and commit messages are in English.
 - Releasing: add a `## <version> — <date>` section to `CHANGELOG.md`, commit, then
   `git tag <version> && git push origin <version>` (plain semver, no `v` prefix).

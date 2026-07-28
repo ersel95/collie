@@ -3,36 +3,50 @@
 //  ⚠️ This file is NOT part of the package — it is a reference template to copy into
 //  the host project.
 //
-//  Setup:
-//  1. Copy this file into your host project.
-//  2. Provide the keys below via the xcconfig → Info.plist chain (the values never
-//     enter the repo; in particular COLLIE_API_KEY lives only in non-prod
-//     xcconfig/secrets):
+//  Collie can deliver a report two ways. Pick the one your app's network policy allows:
 //
-//     // Secrets-NonProd.xcconfig (not committed to git)
+//  A) Firebase (CollieFirebase product) — the report is written to Firestore and a
+//     server-side bridge moves it into the analyst panel. Use this when the app may
+//     only reach a fixed set of hosts (a banking app allowed to talk to Firebase and
+//     its own API, and nothing else). This is what the Yk apps use.
+//
+//  B) Direct HTTPS (core Collie only) — one multipart POST to the Collie backend.
+//     Simpler, but requires the device to reach that host.
+//
+//  Both paths end in the same place: an analyst reviews the report in the panel and
+//  pushes it to Jira. The device never talks to Jira and holds no Jira credentials.
+//
+//  ── Setup for (A) Firebase ───────────────────────────────────────────────────
+//  1. SPM: add the `collie` package and link the **CollieFirebase** product to the app
+//     target (linking only `Collie` will not compile the transport below).
+//  2. The app must already be a Firebase app: `GoogleService-Info.plist` in the target
+//     and `FirebaseApp.configure()` called BEFORE `CollieIntegration.start()`.
+//  3. Provide the keys via the xcconfig → Info.plist chain:
+//
+//     // Secrets-NonProd.xcconfig
 //     COLLIE_ENABLED = YES
-//     COLLIE_API_BASE_URL = https:/$()/collie-api.example.com
-//     COLLIE_API_KEY = <ingestion-api-key from the panel's Admin · Apps page>
-//     COLLIE_ENVIRONMENT = staging
+//     COLLIE_APP_KEY = <app key from the panel: Admin · Apps>
 //
-//     // Corresponding Info.plist entries (resolved through Build Settings):
+//     // Info.plist (resolved through Build Settings)
 //     <key>CollieEnabled</key><string>$(COLLIE_ENABLED)</string>
-//     <key>CollieApiBaseURL</key><string>$(COLLIE_API_BASE_URL)</string>
-//     <key>CollieApiKey</key><string>$(COLLIE_API_KEY)</string>
-//     <key>CollieEnvironment</key><string>$(COLLIE_ENVIRONMENT)</string>
+//     <key>CollieAppKey</key><string>$(COLLIE_APP_KEY)</string>
 //
-//  3. Call `CollieIntegration.start()` at app startup (after your logging library, if
-//     you feed logs from one).
+//     COLLIE_APP_KEY is NOT a secret — it names the app on each report, and write
+//     access is governed by Firestore security rules. (See Integration/firestore.rules.)
 //
-//  Where reports go: the device uploads to the Collie backend — it never talks to Jira.
-//  An analyst reviews the report in the panel and pushes it to Jira from there, choosing
-//  the issue type, parent, assignee and labels. So no Jira project/parent/assignee/PAT
-//  settings exist on the device any more.
+//  ── Setup for (B) HTTPS ──────────────────────────────────────────────────────
+//     COLLIE_API_BASE_URL = https:/$()/collie-api.example.com
+//     COLLIE_API_KEY      = <ingestion api-key from Admin · Apps>   // this IS a secret
+//     …and use the `Collie.configure(with:)` call marked (B) below.
+//
+//  4. Call `CollieIntegration.start()` at app startup (after your logging library, and
+//     after FirebaseApp.configure() when using (A)).
 //
 
 import Foundation
 import Collie
-// import Olaf   // Uncomment if you feed logs from Olaf (see the bridge below).
+import CollieFirebase   // (A) only — remove when using the HTTPS path
+// import Olaf          // Uncomment if you feed logs from Olaf (see the bridge below).
 
 enum CollieIntegration {
 
@@ -46,39 +60,43 @@ enum CollieIntegration {
     static func start() {
         // Local opt-in gate: if the key is missing/NO, Collie never runs (fail-closed).
         let enabled = (plist("CollieEnabled") as NSString?)?.boolValue ?? false
-        guard enabled,
-              let baseURLString = plist("CollieApiBaseURL"),
-              let baseURL = URL(string: baseURLString) else {
-            return
-        }
+        guard enabled, let appKey = plist("CollieAppKey") else { return }
 
-        var config = CollieConfiguration(
+        // (A) Firebase: `apiBaseURL` is unused by FirestoreTransport — it only satisfies
+        // the initialiser. Nothing is ever sent to it.
+        var configuration = CollieConfiguration(
             enabled: true,
-            apiBaseURL: baseURL,
-            apiKey: plist("CollieApiKey") ?? "",
-            environment: plist("CollieEnvironment") ?? "staging"
+            apiBaseURL: URL(string: "https://firestore.googleapis.com")!,
+            environment: "staging"
         )
+
+        // (B) HTTPS — swap the block above for this one:
+        // var configuration = CollieConfiguration(
+        //     enabled: true,
+        //     apiBaseURL: URL(string: plist("CollieApiBaseURL") ?? "")!,
+        //     apiKey: plist("CollieApiKey") ?? "",
+        //     environment: "staging"
+        // )
 
         // Surface Collie's own status messages (queue/send/config errors). The
         // troubleshooting guide assumes this output exists — keep it wired, or route it
         // into your logging library (see the bridge below).
-        config.diagnostics = { print($0) }
+        configuration.diagnostics = { print($0) }
 
         // ── Log source (optional but recommended) ────────────────────────────────────
         //
         // Collie is log-source agnostic: map ANY logger's snapshot (Olaf, Netfox,
         // Pulse, os_log, your own) to [CollieLogEntry]. ALL entries are uploaded with the
-        // report, in full, with their categories preserved — the panel derives its
-        // network and navigation views from them (see the metadata key convention in the
-        // CollieLogEntry docs) and the analyst can attach them to the Jira issue.
+        // report **in full, losslessly, with their categories preserved**; the panel
+        // derives its Network and Navigation views from them (see the metadata key
+        // convention in the CollieLogEntry docs).
         //
-        // Signed-in account: log a "customerNo" metadata key on every sign-in path
-        // (LoginView, RememberMeLoginView, biometric re-login…) so the panel can show
-        // which account was signed in. With Olaf:
+        // Signed-in account: log a "customerNo" metadata key on every sign-in path so the
+        // panel can show which account was in use. With Olaf:
         // Olaf.info("Signed in", category: .auth, metadata: ["customerNo": customerNo])
         //
         // Ready-made Olaf bridge — uncomment if your app uses Olaf:
-        // config.logSnapshotProvider = {
+        // configuration.logSnapshotProvider = {
         //     Olaf.snapshot().map {
         //         CollieLogEntry(
         //             date: $0.date,
@@ -89,15 +107,21 @@ enum CollieIntegration {
         //         )
         //     }
         // }
-        // config.sessionIDProvider = { Olaf.currentSessionID }
-        // config.diagnostics = { Olaf.info($0) }
+        // configuration.sessionIDProvider = { Olaf.currentSessionID }
+        // configuration.diagnostics = { Olaf.info($0) }
         //
-        // Recursion prevention: if your logger captures network traffic, exclude
-        // Collie's own endpoints from its capture. (Collie's session carries no capture
-        // protocol — this is the 2nd safeguard.) With Olaf:
-        // OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + [...])
+        // Recursion prevention: if your logger captures network traffic, exclude Collie's
+        // destination from that capture. With (A) that means the Firebase hosts
+        // ("firestore.googleapis.com"); with (B) use `configuration.captureExclusionFragments`.
 
-        Collie.configure(with: config)
+        // (A) Firebase transport. The app key groups reports in the panel.
+        Collie.configure(
+            with: configuration,
+            transport: FirestoreTransport(configuration: .init(appKey: appKey))
+        )
+
+        // (B) HTTPS transport — the default when no transport is passed:
+        // Collie.configure(with: configuration)
 
         // ── Switching between shake-activated tools (optional) ───────────────────────
         //
@@ -110,7 +134,7 @@ enum CollieIntegration {
         // `config.asksBeforeReporting` (default true: a shake asks first; set it to
         // false to open the report sheet straight away).
 
-        // Suggestion: retry pending (offline/VPN-less) reports on returning to foreground.
+        // Suggestion: retry pending (offline) reports on returning to foreground.
         // NotificationCenter.default.addObserver(
         //     forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
         // ) { _ in Collie.flushPendingUploads() }

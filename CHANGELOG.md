@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.4.0 — 2026-07-28
+
+### Changed
+- **The screenshot preview moved below the input fields.** It used to sit at the top, so
+  on smaller devices the keyboard covered the text field the tester was meant to fill in.
+  The inputs now come first and the thumbnail follows.
+- **Removed the "About the screenshot" consent notice.** ⚠️ The warning told testers that
+  the image captures everything on screen (balances, account details) and to leave the
+  screen first if that was a problem. Removing it is a deliberate product decision — if
+  the host app shows sensitive data, that responsibility now sits entirely with whoever
+  briefs the testers.
+
 ## 1.3.0 — 2026-07-28
 
 ### Changed — BREAKING

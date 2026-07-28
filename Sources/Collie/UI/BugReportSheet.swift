@@ -82,9 +82,6 @@ struct BugReportSheet: View {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(alignment: .leading, spacing: 20) {
-                        if let screenshot {
-                            previewSection(screenshot)
-                        }
                         if requiresName {
                             nameSection.id(Field.name)
                         }
@@ -97,6 +94,12 @@ struct BugReportSheet: View {
                         .id(Field.happened)
                         if case let .failed(message) = state {
                             errorBanner(message)
+                        }
+                        // Below the inputs on purpose: the keyboard covers the bottom of
+                        // the sheet, and what the tester needs to reach is the text field,
+                        // not the thumbnail.
+                        if let screenshot {
+                            previewSection(screenshot)
                         }
                         // Bottom spacer so the keyboard doesn't cover the last field.
                         Color.clear.frame(height: 8)
@@ -166,42 +169,19 @@ struct BugReportSheet: View {
     }
 
     private func previewSection(_ image: UIImage) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack {
-                Spacer()
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-                Spacer()
-            }
-            screenshotConsentNotice
+        HStack {
+            Spacer()
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFit()
+                .frame(maxHeight: 180)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+            Spacer()
         }
-    }
-
-    /// Informed consent: warns the user that the screenshot may contain ALL information
-    /// visible on screen (including sensitive data) and should not be sent if it does.
-    private var screenshotConsentNotice: some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "exclamationmark.shield.fill")
-                .foregroundColor(.orange)
-            VStack(alignment: .leading, spacing: 4) {
-                Text("About the screenshot")
-                    .font(.subheadline.weight(.semibold))
-                Text("This screenshot contains ALL information visible on screen when you send it (including balances, account/card details, and personal data). If there is sensitive data on screen, please don't send the report or leave that screen first. The image is uploaded together with the report and is visible to the analysts reviewing it.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(12)
-        .background(Color.orange.opacity(0.12))
-        .clipShape(RoundedRectangle(cornerRadius: 10))
     }
 
     private var nameSection: some View {

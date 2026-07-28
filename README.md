@@ -18,6 +18,7 @@ Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
   → [Yes] → Form: "What happened?" (+ name on first use)
+  → Tap the screenshot → markup editor (PencilKit): circle the problem, save
   → Backend: POST <reportsPath>  (multipart: report JSON + screenshot, x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff
   → Panel: analyst triages the report and pushes it to Jira
@@ -47,6 +48,10 @@ right person.
 - **Screenshot safety** — the screen is captured at shake time with secure text field
   masks preserved via `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice
   in the form; progressive JPEG compression down to the size limit.
+- **Markup** — tapping the preview in the form opens a PencilKit editor with the system
+  tool picker (pen, marker, eraser, colours, undo), finger drawing enabled. Saving
+  flattens the strokes into the screenshot, so the analyst sees exactly what the tester
+  circled. Nothing is uploaded until the form is sent.
 - **Lossless logs** — ALL entries travel with the report, categories preserved, nothing
   summarized or truncated. The panel keeps the raw stream and derives its Network and
   Navigation views from it.

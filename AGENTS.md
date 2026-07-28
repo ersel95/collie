@@ -3,8 +3,9 @@
 Collie: an SPM bug-reporter package for iOS test builds — shake → banner → form →
 **a report in the analyst panel**. An analyst triages it there and pushes it to Jira,
 choosing the issue type, parent, assignee and labels. A screenshot is captured
-automatically at shake time and uploaded with the report, together with the full log
-stream fed from the host's logging library (any source).
+automatically at shake time — the tester can mark it up in the form before sending — and
+uploaded with the report, together with the full log stream fed from the host's logging
+library (any source).
 
 **Two transports, one destination.** `Collie` uploads over plain HTTPS
 (`IngestionClient`); the separate **`CollieFirebase`** product writes to Firestore
@@ -87,6 +88,10 @@ validation).
     so a response lost in transit cannot create a second report (`UploadQueueTests`).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
+  - Markup (`ScreenshotEditor`, PencilKit) only ever *replaces* the image held by the form:
+    the strokes are flattened into the screenshot at its native pixel size on Save, so the
+    composer/queue/envelope keep seeing a single `UIImage` and stay markup-unaware. Marks
+    a tester draws to hide something must never travel separately from the pixels they cover.
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are uploaded in full, with their categories preserved and

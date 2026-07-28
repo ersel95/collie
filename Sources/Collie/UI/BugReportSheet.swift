@@ -6,6 +6,8 @@ import UIKit
 ///
 /// - One field: **"What happened?"** → `whatHappened`.
 /// - On first use (no stored name) a **name** field is shown as well (one time only).
+/// - Tapping the screenshot preview opens `ScreenshotEditor` (PencilKit markup); saving
+///   there replaces the image the rest of the flow uses.
 /// - **Send** button: active once the description (after trimming) and, if required,
 ///   the name are filled.
 /// - Send → loading → report uploaded to the panel: closes with the report id on success; on a
@@ -35,14 +37,22 @@ struct BugReportSheet: View {
         case name, happened
     }
 
-    let screenshot: UIImage?
     /// Called when the sheet closes.
     let onClose: (_ outcome: Outcome) -> Void
 
+    /// The captured screenshot, replaced in place when the tester marks it up — what is
+    /// uploaded is whatever this holds at send time.
+    @State private var screenshot: UIImage?
     @State private var whatHappened: String = ""
     @State private var testerName: String = ""
     @State private var state: SubmitState = .idle
+    @State private var isMarkingUp = false
     @FocusState private var focusedField: Field?
+
+    init(screenshot: UIImage?, onClose: @escaping (_ outcome: Outcome) -> Void) {
+        _screenshot = State(initialValue: screenshot)
+        self.onClose = onClose
+    }
 
     private let requiresName: Bool = !CollieDeviceIdentity.hasStoredName
     /// Whether the host registered a switch-tool handler (`Collie.onLogoTap`); when it
@@ -139,6 +149,18 @@ struct BugReportSheet: View {
         }
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(state == .sending)
+        .fullScreenCover(isPresented: $isMarkingUp) {
+            if let screenshot {
+                ScreenshotEditor(
+                    image: screenshot,
+                    onCancel: { isMarkingUp = false },
+                    onSave: { edited in
+                        self.screenshot = edited
+                        isMarkingUp = false
+                    }
+                )
+            }
+        }
     }
 
     // MARK: - Sections
@@ -168,20 +190,40 @@ struct BugReportSheet: View {
         }
     }
 
+    /// The screenshot preview. Tapping it opens the markup editor — the tester can circle
+    /// or scribble on the problem instead of describing where it is.
     private func previewSection(_ image: UIImage) -> some View {
-        HStack {
-            Spacer()
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFit()
-                .frame(maxHeight: 180)
-                .clipShape(RoundedRectangle(cornerRadius: 12))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                )
-            Spacer()
+        VStack(spacing: 6) {
+            Button {
+                focusedField = nil
+                isMarkingUp = true
+            } label: {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(maxHeight: 180)
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                    )
+                    .overlay(alignment: .bottomTrailing) {
+                        Image(systemName: "pencil.tip.crop.circle")
+                            .font(.title3)
+                            .foregroundStyle(.white)
+                            .padding(6)
+                            .background(Circle().fill(Color.accentColor))
+                            .padding(8)
+                    }
+            }
+            .buttonStyle(.plain)
+            .disabled(state == .sending)
+            .accessibilityLabel("Screenshot — tap to mark up")
+            Text("Tap the screenshot to mark it up")
+                .font(.caption)
+                .foregroundColor(.secondary)
         }
+        .frame(maxWidth: .infinity)
     }
 
     private var nameSection: some View {

@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.8.0 — 2026-07-28
+
+### Added
+- **Screenshot markup.** Tapping the screenshot preview in the report form opens a
+  full-screen PencilKit editor with the system tool picker — pen, marker, eraser, colours,
+  undo — and finger drawing enabled, since test devices rarely have an Apple Pencil.
+  **Save** flattens the strokes into the screenshot at its native pixel size and the flow
+  continues with that image; **Cancel** discards them. Testers can circle the problem
+  instead of describing where on the screen it is.
+
 ## 1.7.0 — 2026-07-28
 
 ### Added

@@ -1,235 +1,175 @@
 #if canImport(UIKit)
-import PencilKit
+import QuickLook
 import SwiftUI
 import UIKit
 
-/// Full-screen markup editor for the captured screenshot, opened by tapping the preview
-/// in the report sheet.
+/// The **system** markup editor, opened by tapping the screenshot preview in the report
+/// sheet.
 ///
-/// Built on PencilKit so the tester gets the same tools as the system markup screen —
-/// pen/marker/eraser, colours, undo — from `PKToolPicker`, with finger input enabled
-/// (`drawingPolicy = .anyInput`); test devices rarely have an Apple Pencil.
+/// This is QuickLook's editing mode — the very same markup UI iOS shows for a screenshot
+/// or a file: the PencilKit palette (pen, marker, pencil, ruler, eraser, colours) *plus*
+/// the "+" menu that only Markup has (text, shapes, signature, magnifier, opacity). Using
+/// it instead of a hand-built canvas means the tester gets the editor they already know,
+/// and it keeps up with whatever Apple ships next.
 ///
-/// **Save** flattens the strokes onto the screenshot at its native pixel size and hands
-/// the result back, so the rest of the flow (JPEG encoding, upload) carries the annotated
-/// image and never sees the original. **Cancel** discards the strokes.
+/// The screenshot is written to a temporary file and previewed in `.updateContents` mode,
+/// so Markup saves the flattened result straight back over that file. The sheet then
+/// reloads it and the rest of the flow (JPEG encoding, upload) carries the annotated
+/// image, never the original.
 @MainActor
-struct ScreenshotEditor: View {
+struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
 
-    let image: UIImage
-    let onCancel: () -> Void
-    let onSave: (UIImage) -> Void
+    /// The temporary file Markup edits in place.
+    let fileURL: URL
+    /// Called once the preview closes. `edited` is true when Markup actually saved.
+    let onDismiss: (_ edited: Bool) -> Void
 
-    /// Bridge to the live `PKCanvasView` — the toolbar buttons and the export act on it
-    /// directly, which keeps PencilKit's own undo stack as the source of truth.
-    @State private var handle = MarkupHandle()
-    /// Drives the enabled state of Undo/Clear; updated by the canvas delegate.
-    @State private var strokeCount = 0
-
-    /// Room reserved at the bottom for the floating tool picker, so it never covers the
-    /// part of the screenshot being marked up.
-    private let toolPickerReserve: CGFloat = 96
-
-    var body: some View {
-        NavigationView {
-            GeometryReader { geo in
-                let canvasSize = fittedSize(in: CGSize(
-                    width: geo.size.width,
-                    height: max(geo.size.height - toolPickerReserve, 1)
-                ))
-                ZStack {
-                    Color(.systemBackground).ignoresSafeArea()
-                    ZStack {
-                        Image(uiImage: image)
-                            .resizable()
-                            .frame(width: canvasSize.width, height: canvasSize.height)
-                        MarkupCanvas(handle: handle) { count in
-                            strokeCount = count
-                        }
-                        .frame(width: canvasSize.width, height: canvasSize.height)
-                    }
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-                    .padding(.top, 8)
-                }
-            }
-            .navigationTitle("Mark up")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onCancel() }
-                }
-                ToolbarItemGroup(placement: .navigationBarTrailing) {
-                    Button {
-                        handle.undo()
-                    } label: {
-                        Image(systemName: "arrow.uturn.backward")
-                    }
-                    .disabled(strokeCount == 0)
-                    .accessibilityLabel("Undo")
-
-                    Button {
-                        handle.clear()
-                    } label: {
-                        Image(systemName: "trash")
-                    }
-                    .disabled(strokeCount == 0)
-                    .accessibilityLabel("Clear all marks")
-
-                    Button("Save") { onSave(flattened()) }
-                }
-            }
+    func makeUIViewController(context: Context) -> MarkupContainerViewController {
+        let container = MarkupContainerViewController()
+        container.view.backgroundColor = .black
+        container.onReady = { [weak container] in
+            guard let container else { return }
+            let preview = QLPreviewController()
+            preview.dataSource = context.coordinator
+            preview.delegate = context.coordinator
+            preview.modalPresentationStyle = .fullScreen
+            // Presented rather than embedded: QuickLook only puts its own Done button up
+            // when it owns the presentation.
+            container.present(preview, animated: false)
         }
-        .navigationViewStyle(.stack)
+        return container
     }
 
-    // MARK: - Geometry
-
-    /// The aspect-fit rect the screenshot occupies — the canvas matches it exactly, so a
-    /// stroke lands where the tester drew it.
-    private func fittedSize(in available: CGSize) -> CGSize {
-        guard image.size.width > 0, image.size.height > 0 else { return available }
-        let scale = min(available.width / image.size.width, available.height / image.size.height)
-        return CGSize(width: image.size.width * scale, height: image.size.height * scale)
-    }
-
-    // MARK: - Export
-
-    /// Draws the strokes onto the screenshot at its native pixel size. The stroke overlay
-    /// is rasterised at the scale that matches those pixels, so marks stay crisp instead of
-    /// being upscaled from the on-screen preview.
-    private func flattened() -> UIImage {
-        guard let drawing = handle.canvas?.drawing, !drawing.strokes.isEmpty,
-              let canvasBounds = handle.canvas?.bounds, canvasBounds.width > 0
-        else { return image }
-
-        let format = UIGraphicsImageRendererFormat.default()
-        format.scale = image.scale
-        format.opaque = true
-        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
-
-        let target = CGRect(origin: .zero, size: image.size)
-        let overlayScale = (image.size.width * image.scale) / canvasBounds.width
-        let overlay = drawing.image(from: canvasBounds, scale: overlayScale)
-
-        return renderer.image { _ in
-            image.draw(in: target)
-            overlay.draw(in: target)
-        }
-    }
-}
-
-// MARK: - Canvas bridge
-
-/// Holds the live canvas and its tool picker for the SwiftUI layer. A reference type on
-/// purpose: the toolbar needs to reach the canvas that PencilKit owns.
-@MainActor
-final class MarkupHandle {
-    weak var canvas: PKCanvasView?
-    /// Kept alive for as long as the editor is up — a released picker takes the palette
-    /// with it.
-    var toolPicker: PKToolPicker?
-
-    func undo() {
-        canvas?.undoManager?.undo()
-    }
-
-    func clear() {
-        guard let canvas else { return }
-        // Through the undo manager rather than assigning an empty drawing, so a cleared
-        // markup can still be undone.
-        canvas.undoManager?.beginUndoGrouping()
-        canvas.drawing = PKDrawing()
-        canvas.undoManager?.endUndoGrouping()
-    }
-}
-
-/// The PencilKit canvas laid over the screenshot.
-private struct MarkupCanvas: UIViewRepresentable {
-
-    let handle: MarkupHandle
-    /// Reports the stroke count after every change (enables/disables Undo and Clear).
-    let onDrawingChange: (Int) -> Void
-
-    func makeUIView(context: Context) -> PKCanvasView {
-        let canvas = WindowAwareCanvas()
-        canvas.backgroundColor = .clear
-        canvas.isOpaque = false
-        // Test devices rarely have a Pencil; without this the canvas ignores fingers.
-        canvas.drawingPolicy = .anyInput
-        // The canvas is exactly the image rect — scrolling would only shift the strokes
-        // away from what is underneath them.
-        canvas.isScrollEnabled = false
-        canvas.alwaysBounceVertical = false
-        canvas.alwaysBounceHorizontal = false
-        // A usable default, so marking up works even if the tool picker never appears.
-        canvas.tool = PKInkingTool(.pen, color: .systemRed, width: 8)
-        canvas.delegate = context.coordinator
-        canvas.onAttachToWindow = { [weak canvas] in
-            guard let canvas else { return }
-            context.coordinator.presentToolPicker(for: canvas)
-        }
-        handle.canvas = canvas
-        return canvas
-    }
-
-    func updateUIView(_ canvas: PKCanvasView, context: Context) {
-        // The drawing lives in the canvas, not in SwiftUI state — nothing to push back.
-    }
-
-    static func dismantleUIView(_ canvas: PKCanvasView, coordinator: Coordinator) {
-        coordinator.dismissToolPicker(for: canvas)
-    }
+    func updateUIViewController(_ container: MarkupContainerViewController, context: Context) {}
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(handle: handle, onDrawingChange: onDrawingChange)
+        Coordinator(fileURL: fileURL, onDismiss: onDismiss)
     }
 
     @MainActor
-    final class Coordinator: NSObject, PKCanvasViewDelegate {
-        private let handle: MarkupHandle
-        private let onDrawingChange: (Int) -> Void
+    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
 
-        init(handle: MarkupHandle, onDrawingChange: @escaping (Int) -> Void) {
-            self.handle = handle
-            self.onDrawingChange = onDrawingChange
+        private let item: MarkupItem
+        private let onDismiss: (_ edited: Bool) -> Void
+        private var edited = false
+
+        init(fileURL: URL, onDismiss: @escaping (_ edited: Bool) -> Void) {
+            self.item = MarkupItem(url: fileURL)
+            self.onDismiss = onDismiss
         }
 
-        func presentToolPicker(for canvas: PKCanvasView) {
-            let picker = handle.toolPicker ?? PKToolPicker()
-            handle.toolPicker = picker
-            picker.addObserver(canvas)
-            picker.setVisible(true, forFirstResponder: canvas)
-            canvas.becomeFirstResponder()
+        nonisolated func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+
+        nonisolated func previewController(
+            _ controller: QLPreviewController,
+            previewItemAt index: Int
+        ) -> QLPreviewItem {
+            MainActor.assumeIsolated { item }
         }
 
-        func dismissToolPicker(for canvas: PKCanvasView) {
-            handle.toolPicker?.setVisible(false, forFirstResponder: canvas)
-            handle.toolPicker?.removeObserver(canvas)
-            handle.toolPicker = nil
+        /// Turns the plain preview into an editor: this is what puts the markup button in
+        /// the navigation bar. `.updateContents` writes the edits back over our temporary
+        /// file, so there is no second copy to track.
+        nonisolated func previewController(
+            _ controller: QLPreviewController,
+            editingModeFor previewItem: QLPreviewItem
+        ) -> QLPreviewItemEditingMode {
+            .updateContents
         }
 
-        nonisolated func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        nonisolated func previewController(
+            _ controller: QLPreviewController,
+            didUpdateContentsOf previewItem: QLPreviewItem
+        ) {
+            MainActor.assumeIsolated { edited = true }
+        }
+
+        /// QuickLook could not write back (permissions, disk) and saved a copy elsewhere —
+        /// move it over our file so the sheet still picks the edits up.
+        nonisolated func previewController(
+            _ controller: QLPreviewController,
+            didSaveEditedCopyOf previewItem: QLPreviewItem,
+            at modifiedContentsURL: URL
+        ) {
             MainActor.assumeIsolated {
-                onDrawingChange(canvasView.drawing.strokes.count)
+                guard let destination = item.previewItemURL else { return }
+                try? FileManager.default.removeItem(at: destination)
+                try? FileManager.default.moveItem(at: modifiedContentsURL, to: destination)
+                edited = true
             }
+        }
+
+        nonisolated func previewControllerDidDismiss(_ controller: QLPreviewController) {
+            MainActor.assumeIsolated { onDismiss(edited) }
         }
     }
 }
 
-/// `PKCanvasView` that reports when it lands in a window — the tool picker can only be
-/// shown once the canvas can become first responder.
-private final class WindowAwareCanvas: PKCanvasView {
-    var onAttachToWindow: (() -> Void)?
+/// Hosts the QuickLook presentation. Presenting from `viewDidAppear` rather than from
+/// `updateUIViewController`: while SwiftUI's cover is still animating in, the container
+/// is not in a window yet and the presentation would be dropped.
+@MainActor
+final class MarkupContainerViewController: UIViewController {
 
-    override func didMoveToWindow() {
-        super.didMoveToWindow()
-        guard window != nil else { return }
-        onAttachToWindow?()
+    var onReady: (() -> Void)?
+    private var didPresent = false
+
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        guard !didPresent else { return }
+        didPresent = true
+        onReady?()
+    }
+}
+
+/// A file-backed preview item. QuickLook needs an object here, not a bare URL.
+///
+/// `@unchecked Sendable`: both properties are immutable value types, and QuickLook reads
+/// the item from whichever queue it likes — an `NSObject` subclass cannot be inferred
+/// `Sendable` on its own.
+private final class MarkupItem: NSObject, QLPreviewItem, @unchecked Sendable {
+    let previewItemURL: URL?
+    let previewItemTitle: String?
+
+    init(url: URL) {
+        self.previewItemURL = url
+        self.previewItemTitle = "Screenshot"
+    }
+}
+
+// MARK: - Temporary file handling
+
+/// Moves the screenshot to and from the temporary file QuickLook edits in place.
+@MainActor
+enum ScreenshotMarkupFile {
+
+    /// Writes the screenshot out as PNG (lossless: the tester may go in and out of markup
+    /// several times before sending). `nil` when it cannot be written — the caller then
+    /// simply keeps the preview non-interactive.
+    static func write(_ image: UIImage) -> URL? {
+        guard let data = image.pngData() else { return nil }
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("collie-markup-\(UUID().uuidString).png")
+        do {
+            try data.write(to: url, options: .atomic)
+            return url
+        } catch {
+            Collie.diag("Markup: could not write the temporary screenshot — \(error)")
+            return nil
+        }
+    }
+
+    /// Reads the marked-up file back, restoring the scale of the original (a PNG on disk
+    /// carries none), so the preview and the upload keep the geometry they started with.
+    static func read(_ url: URL, matching original: UIImage) -> UIImage? {
+        guard let data = try? Data(contentsOf: url), let decoded = UIImage(data: data)
+        else { return nil }
+        guard let cgImage = decoded.cgImage else { return decoded }
+        return UIImage(cgImage: cgImage, scale: original.scale, orientation: .up)
+    }
+
+    static func discard(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
     }
 }
 #endif

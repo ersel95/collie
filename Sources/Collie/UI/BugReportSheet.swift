@@ -6,7 +6,7 @@ import UIKit
 ///
 /// - One field: **"What happened?"** → `whatHappened`.
 /// - On first use (no stored name) a **name** field is shown as well (one time only).
-/// - Tapping the screenshot preview opens `ScreenshotEditor` (PencilKit markup); saving
+/// - Tapping the screenshot preview opens the system markup editor (QuickLook); saving
 ///   there replaces the image the rest of the flow uses.
 /// - **Send** button: active once the description (after trimming) and, if required,
 ///   the name are filled.
@@ -46,8 +46,15 @@ struct BugReportSheet: View {
     @State private var whatHappened: String = ""
     @State private var testerName: String = ""
     @State private var state: SubmitState = .idle
-    @State private var isMarkingUp = false
+    /// Non-nil while the system markup editor is up, holding the temporary file it edits.
+    @State private var markupSession: MarkupSession?
     @FocusState private var focusedField: Field?
+
+    /// The temporary file handed to QuickLook, identified so SwiftUI can drive the cover.
+    private struct MarkupSession: Identifiable {
+        let id = UUID()
+        let url: URL
+    }
 
     init(screenshot: UIImage?, onClose: @escaping (_ outcome: Outcome) -> Void) {
         _screenshot = State(initialValue: screenshot)
@@ -149,18 +156,29 @@ struct BugReportSheet: View {
         }
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(state == .sending)
-        .fullScreenCover(isPresented: $isMarkingUp) {
-            if let screenshot {
-                ScreenshotEditor(
-                    image: screenshot,
-                    onCancel: { isMarkingUp = false },
-                    onSave: { edited in
-                        self.screenshot = edited
-                        isMarkingUp = false
-                    }
-                )
+        .fullScreenCover(item: $markupSession) { session in
+            ScreenshotMarkupPreview(fileURL: session.url) { edited in
+                finishMarkup(session: session, edited: edited)
             }
+            .ignoresSafeArea()
         }
+    }
+
+    // MARK: - Markup
+
+    private func startMarkup() {
+        guard let screenshot, let url = ScreenshotMarkupFile.write(screenshot) else { return }
+        focusedField = nil
+        markupSession = MarkupSession(url: url)
+    }
+
+    private func finishMarkup(session: MarkupSession, edited: Bool) {
+        if edited, let original = screenshot,
+           let marked = ScreenshotMarkupFile.read(session.url, matching: original) {
+            screenshot = marked
+        }
+        ScreenshotMarkupFile.discard(session.url)
+        markupSession = nil
     }
 
     // MARK: - Sections
@@ -195,8 +213,7 @@ struct BugReportSheet: View {
     private func previewSection(_ image: UIImage) -> some View {
         VStack(spacing: 6) {
             Button {
-                focusedField = nil
-                isMarkingUp = true
+                startMarkup()
             } label: {
                 Image(uiImage: image)
                     .resizable()
@@ -219,7 +236,9 @@ struct BugReportSheet: View {
             .buttonStyle(.plain)
             .disabled(state == .sending)
             .accessibilityLabel("Screenshot — tap to mark up")
-            Text("Tap the screenshot to mark it up")
+            // The system markup editor opens on the preview page first, with the markup
+            // button in its navigation bar — say so, so nobody stops at the preview.
+            Text("Tap the screenshot, then \(Image(systemName: "pencil.tip.crop.circle")) to mark it up")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

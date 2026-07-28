@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.9.0 — 2026-07-28
+
+### Changed
+- **Markup is now the system editor.** 1.8.0 drew on a hand-built PencilKit canvas: it
+  depended on `PKToolPicker` appearing over Collie's own window, and even when it did it
+  offered strokes only. The screenshot preview now opens **QuickLook in editing mode** —
+  the same markup screen iOS shows for a screenshot, with the full palette *and* the "+"
+  tools (text, shapes, signature, magnifier, opacity). The edits are saved back over a
+  temporary PNG, which the form reloads; the rest of the flow is unchanged.
+
+  Tapping the preview opens QuickLook's preview page first — the markup button is in its
+  navigation bar, and the hint under the preview now points at it.
+
 ## 1.8.0 — 2026-07-28
 
 ### Added

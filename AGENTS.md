@@ -88,10 +88,13 @@ validation).
     so a response lost in transit cannot create a second report (`UploadQueueTests`).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
-  - Markup (`ScreenshotEditor`, PencilKit) only ever *replaces* the image held by the form:
-    the strokes are flattened into the screenshot at its native pixel size on Save, so the
-    composer/queue/envelope keep seeing a single `UIImage` and stay markup-unaware. Marks
-    a tester draws to hide something must never travel separately from the pixels they cover.
+  - Markup is the **system** editor (`ScreenshotMarkupPreview`: QuickLook in
+    `.updateContents` mode) — do not replace it with a hand-built canvas; a home-grown one
+    loses the "+" tools (text, shapes, signature, magnifier) and stops tracking whatever
+    Apple ships next. It edits a temporary PNG and only ever *replaces* the image held by
+    the form, so the composer/queue/envelope keep seeing a single `UIImage` and stay
+    markup-unaware. Marks a tester draws to hide something must never travel separately
+    from the pixels they cover.
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are uploaded in full, with their categories preserved and

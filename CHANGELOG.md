@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.7.0 — 2026-07-28
+
+### Added
+- **`CollieConfiguration.activatesOnShake`** (default `true`). Set it to `false` when
+  another shake-activated tool owns the gesture: Collie then installs no shake detector
+  and is reached only through `Collie.presentReport()` — typically that tool's logo
+  hand-off. Previously both tools answered the same shake and Collie's banner opened
+  underneath the other tool's full-screen UI, where it timed out unseen.
+
+  Telemetry preparation moved ahead of the gate, so a hand-off still carries battery and
+  network state on the very first report.
+
 ## 1.6.0 — 2026-07-28
 
 ### Added

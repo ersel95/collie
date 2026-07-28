@@ -45,6 +45,16 @@ public struct CollieConfiguration: Sendable {
     /// whether `Collie.onLogoTap` has a handler) no longer affects it.
     public var asksBeforeReporting: Bool
 
+    /// Does a shake open Collie at all? `true` (default) installs the shake detector.
+    ///
+    /// Set `false` when another shake-activated tool owns the gesture and Collie is
+    /// reached only deliberately — through `Collie.presentReport()` from that tool's
+    /// hand-off. Without this both tools answer the same shake and Collie's banner ends
+    /// up buried under the other tool's full-screen UI.
+    ///
+    /// `presentReport()` keeps working regardless.
+    public var activatesOnShake: Bool
+
     // MARK: - Report meta
 
     /// Environment label (e.g. "staging" / "uat"). Sent with every report.
@@ -91,6 +101,7 @@ public struct CollieConfiguration: Sendable {
         reportsPath: String = CollieConfiguration.defaultReportsPath,
         configPath: String = CollieConfiguration.defaultConfigPath,
         asksBeforeReporting: Bool = true,
+        activatesOnShake: Bool = true,
         environment: String = "staging",
         requestTimeout: TimeInterval = 30,
         maxRetryCount: Int = 5,
@@ -107,6 +118,7 @@ public struct CollieConfiguration: Sendable {
         self.reportsPath = reportsPath
         self.configPath = configPath
         self.asksBeforeReporting = asksBeforeReporting
+        self.activatesOnShake = activatesOnShake
         self.environment = environment
         self.requestTimeout = max(1, requestTimeout)
         self.maxRetryCount = max(0, maxRetryCount)

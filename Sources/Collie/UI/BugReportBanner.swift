@@ -32,10 +32,16 @@ final class BugReportBanner {
     /// opt-in is on**. Idempotent.
     func install() {
         guard shakeObserver == nil else { return }
-        ShakeDetector.install()
-        // Start battery monitoring + the network monitor early so the first report has
-        // populated telemetry.
+        // Start telemetry regardless — a hand-off via `Collie.presentReport()` needs it
+        // just as much as a shake does.
         CollieTelemetryCollector.prepare()
+        // The host can hand the gesture to another tool; Collie is then reached only
+        // through `presentReport()`.
+        guard Collie.bugReportService?.configuration.activatesOnShake != false else {
+            Collie.diag("Shake activation disabled — Collie opens only via presentReport().")
+            return
+        }
+        ShakeDetector.install()
         shakeObserver = NotificationCenter.default.addObserver(
             forName: .collieShake,
             object: nil,

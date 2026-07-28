@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.9.1 — 2026-07-28
+
+### Fixed
+- **Crash when leaving the markup editor (1.9.0).** QuickLook reports a saved edit from an
+  `NSFileCoordinator` operation queue, not the main one, and the delegate assumed main-actor
+  isolation — so tapping **Done** trapped the process (`SIGTRAP`). The QuickLook callbacks
+  now touch immutable state only and hop to the main queue when they have to; whether the
+  screenshot was edited is decided by reading the file back on dismiss instead of by a flag
+  set from another thread.
+
 ## 1.9.0 — 2026-07-28
 
 ### Changed

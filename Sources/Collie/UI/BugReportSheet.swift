@@ -157,8 +157,8 @@ struct BugReportSheet: View {
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(state == .sending)
         .fullScreenCover(item: $markupSession) { session in
-            ScreenshotMarkupPreview(fileURL: session.url) { edited in
-                finishMarkup(session: session, edited: edited)
+            ScreenshotMarkupPreview(fileURL: session.url) {
+                finishMarkup(session: session)
             }
             .ignoresSafeArea()
         }
@@ -172,13 +172,20 @@ struct BugReportSheet: View {
         markupSession = MarkupSession(url: url)
     }
 
-    private func finishMarkup(session: MarkupSession, edited: Bool) {
-        if edited, let original = screenshot,
+    /// Always reads the file back rather than tracking whether Markup saved: QuickLook
+    /// reports that from a background queue, and an untouched file simply decodes back to
+    /// the same screenshot.
+    private func finishMarkup(session: MarkupSession) {
+        if let original = screenshot,
            let marked = ScreenshotMarkupFile.read(session.url, matching: original) {
             screenshot = marked
         }
         ScreenshotMarkupFile.discard(session.url)
-        markupSession = nil
+        // QuickLook already animated itself away; a second animated dismissal here would
+        // leave the empty container on screen for the length of it.
+        var transaction = Transaction()
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { markupSession = nil }
     }
 
     // MARK: - Sections

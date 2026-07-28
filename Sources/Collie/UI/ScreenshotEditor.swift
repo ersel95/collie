@@ -21,12 +21,14 @@ struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
 
     /// The temporary file Markup edits in place.
     let fileURL: URL
-    /// Called once the preview closes. `edited` is true when Markup actually saved.
-    let onDismiss: (_ edited: Bool) -> Void
+    /// Called on the main actor once the preview closes.
+    let onDismiss: () -> Void
 
     func makeUIViewController(context: Context) -> MarkupContainerViewController {
         let container = MarkupContainerViewController()
-        container.view.backgroundColor = .black
+        // Visible for one frame while QuickLook animates away — a plain background reads as
+        // the sheet's own page rather than as a black flash.
+        container.view.backgroundColor = .systemBackground
         container.onReady = { [weak container] in
             guard let container else { return }
             let preview = QLPreviewController()
@@ -46,14 +48,18 @@ struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
         Coordinator(fileURL: fileURL, onDismiss: onDismiss)
     }
 
+    /// ⚠️ QuickLook calls these back from **whatever queue it likes** — the save path runs
+    /// on an `NSFileCoordinator` operation queue, not the main one. So every method here is
+    /// `nonisolated` and touches only immutable state; anything that has to reach the UI
+    /// hops to the main queue first. `MainActor.assumeIsolated` in these callbacks traps
+    /// the process (it did: SIGTRAP on Done, Collie 1.9.0).
     @MainActor
     final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
 
-        private let item: MarkupItem
-        private let onDismiss: (_ edited: Bool) -> Void
-        private var edited = false
+        private nonisolated let item: MarkupItem
+        private let onDismiss: () -> Void
 
-        init(fileURL: URL, onDismiss: @escaping (_ edited: Bool) -> Void) {
+        init(fileURL: URL, onDismiss: @escaping () -> Void) {
             self.item = MarkupItem(url: fileURL)
             self.onDismiss = onDismiss
         }
@@ -64,7 +70,7 @@ struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
             _ controller: QLPreviewController,
             previewItemAt index: Int
         ) -> QLPreviewItem {
-            MainActor.assumeIsolated { item }
+            item
         }
 
         /// Turns the plain preview into an editor: this is what puts the markup button in
@@ -77,30 +83,25 @@ struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
             .updateContents
         }
 
-        nonisolated func previewController(
-            _ controller: QLPreviewController,
-            didUpdateContentsOf previewItem: QLPreviewItem
-        ) {
-            MainActor.assumeIsolated { edited = true }
-        }
-
-        /// QuickLook could not write back (permissions, disk) and saved a copy elsewhere —
-        /// move it over our file so the sheet still picks the edits up.
+        /// QuickLook could not write back in place (permissions, disk) and saved a copy
+        /// elsewhere — move it over our file so the sheet still picks the edits up.
+        /// `FileManager` is thread-safe, so this needs no hop.
         nonisolated func previewController(
             _ controller: QLPreviewController,
             didSaveEditedCopyOf previewItem: QLPreviewItem,
             at modifiedContentsURL: URL
         ) {
-            MainActor.assumeIsolated {
-                guard let destination = item.previewItemURL else { return }
-                try? FileManager.default.removeItem(at: destination)
-                try? FileManager.default.moveItem(at: modifiedContentsURL, to: destination)
-                edited = true
-            }
+            guard let destination = item.previewItemURL else { return }
+            try? FileManager.default.removeItem(at: destination)
+            try? FileManager.default.moveItem(at: modifiedContentsURL, to: destination)
         }
 
         nonisolated func previewControllerDidDismiss(_ controller: QLPreviewController) {
-            MainActor.assumeIsolated { onDismiss(edited) }
+            // Explicit hop rather than an isolation assumption: this one does arrive on the
+            // main queue today, but nothing in the API promises it.
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self.onDismiss() }
+            }
         }
     }
 }

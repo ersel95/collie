@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.0 — 2026-07-28
+
+### Changed — BREAKING (CollieFirebase only)
+- **Screenshots go to Firestore, not Cloud Storage.** Cloud Storage requires a paid
+  Firebase plan; on the free tier it is unavailable, so the previous release stranded
+  every screenshot at the upload step. The JPEG is now base64-encoded into its own
+  document (`collie_report_screenshots/<reportID>`), keyed by the report id so a retry
+  overwrites rather than duplicates. Keeping it out of the report document means listing
+  reports never drags image data along.
+  - `FirestoreTransport.Configuration`: `storagePrefix` → `screenshotCollection`, plus a
+    new `maxScreenshotBytes` (default 650 KB). Firestore caps a document at 1 MiB and
+    base64 inflates by ~33%, so a larger image is dropped — with the reason recorded on
+    the report — instead of failing the whole submission.
+  - `CollieFirebase` no longer links `FirebaseStorage`.
+  - The report document now carries `hasScreenshot: Bool` instead of `screenshotPath`.
+
 ## 1.1.1 — 2026-07-28
 
 ### Fixed

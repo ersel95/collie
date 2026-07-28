@@ -1,14 +1,20 @@
 import Foundation
 import Collie
 import FirebaseFirestore
-import FirebaseStorage
 
 /// Sends reports to **Firebase** instead of an HTTPS endpoint of your own.
 ///
 /// This exists for hosts whose network policy allows Firebase but not arbitrary
 /// destinations — a banking app that may reach `*.googleapis.com` and its own API, and
-/// nothing else. The report lands in Firestore, the screenshot in Cloud Storage, and a
-/// server-side worker (or the analyst panel) picks it up from there.
+/// nothing else. The report lands in Firestore and a server-side worker (or the analyst
+/// panel) picks it up from there.
+///
+/// **Screenshots go to Firestore, not Cloud Storage.** Storage requires a paid Firebase
+/// plan; on the free tier it is simply unavailable, which would strand every report at
+/// the upload step. So the JPEG is base64-encoded into its *own* document — keeping it
+/// out of the report document means listing reports in the panel never drags megabytes
+/// of image data along. Firestore caps a document at 1 MiB, so `maxScreenshotBytes`
+/// bounds the raw JPEG well below that (base64 inflates by ~33%).
 ///
 /// **Idempotency.** The queue's report id becomes the Firestore *document id*, so a
 /// retry after a lost response writes to the same document instead of creating a second
@@ -17,7 +23,7 @@ import FirebaseStorage
 /// **What is written** (`<collection>/<reportID>`):
 /// - `app`, `device`, `report`, `entries`, `telemetry` — the envelope, decoded from JSON
 ///   so the data is queryable in Firestore rather than an opaque blob.
-/// - `screenshotPath` — Storage path of the JPEG, or `nil`.
+/// - `hasScreenshot` — whether `<screenshotCollection>/<reportID>` holds the image.
 /// - `status` — always `"new"`; the panel owns the lifecycle afterwards.
 /// - `createdAt` — server timestamp.
 ///
@@ -29,8 +35,9 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
     public struct Configuration: Sendable {
         /// Firestore collection that receives the reports.
         public var collection: String
-        /// Cloud Storage folder screenshots are written under.
-        public var storagePrefix: String
+        /// Firestore collection that receives the base64 screenshots, one document per
+        /// report. Kept separate so listing reports never pulls image data along.
+        public var screenshotCollection: String
         /// Which app the report belongs to — the panel groups by this.
         public var appKey: String
         /// Firestore document holding the remote kill switch
@@ -40,39 +47,41 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         /// 1 MiB). Envelopes above this are rejected as a permanent failure rather than
         /// retried forever.
         public var maxDocumentBytes: Int
+        /// Upper bound on the RAW screenshot. base64 inflates by ~33%, so this must stay
+        /// comfortably under `maxDocumentBytes`. A larger image is dropped and the report
+        /// still goes — the text and logs matter more than the picture.
+        public var maxScreenshotBytes: Int
 
         public init(
             appKey: String,
             collection: String = "collie_reports",
-            storagePrefix: String = "collie",
+            screenshotCollection: String = "collie_report_screenshots",
             configCollection: String = "collie_config",
-            maxDocumentBytes: Int = 900_000
+            maxDocumentBytes: Int = 900_000,
+            maxScreenshotBytes: Int = 650_000
         ) {
             self.appKey = appKey
             self.collection = collection
-            self.storagePrefix = storagePrefix
+            self.screenshotCollection = screenshotCollection
             self.configCollection = configCollection
             self.maxDocumentBytes = maxDocumentBytes
+            self.maxScreenshotBytes = maxScreenshotBytes
         }
     }
 
     private let configuration: Configuration
     private let firestore: Firestore
-    private let storage: Storage
 
     /// - Parameters:
-    ///   - configuration: Collection/bucket layout and the app key.
+    ///   - configuration: Collection layout and the app key.
     ///   - firestore: Defaults to the app's default Firestore instance. The host must
     ///     have called `FirebaseApp.configure()` before this runs.
-    ///   - storage: Defaults to the app's default Cloud Storage bucket.
     public init(
         configuration: Configuration,
-        firestore: Firestore = Firestore.firestore(),
-        storage: Storage = Storage.storage()
+        firestore: Firestore = Firestore.firestore()
     ) {
         self.configuration = configuration
         self.firestore = firestore
-        self.storage = storage
     }
 
     // MARK: - ReportTransport
@@ -96,24 +105,28 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             return .permanentFailure("Could not decode the report envelope")
         }
 
-        // 1. Screenshot first: if it fails transiently the report is retried whole, and
-        //    the document never points at an object that does not exist.
-        var screenshotPath: String?
+        // 1. Screenshot first: if it fails transiently the whole report is retried, so the
+        //    report document never claims an image that was never written.
+        var hasScreenshot = false
         if let screenshot, !screenshot.isEmpty {
-            let path = "\(configuration.storagePrefix)/\(configuration.appKey)/\(reportID).jpg"
-            switch await putScreenshot(screenshot, at: path) {
-            case .success:
-                screenshotPath = path
-            case .permanentFailure(let reason):
-                // Losing the image must not lose the report.
-                document["screenshotError"] = reason
-            case .transientFailure(let reason):
-                return .transientFailure(reason)
+            if screenshot.count > configuration.maxScreenshotBytes {
+                document["screenshotError"] =
+                    "Screenshot dropped: \(screenshot.count) bytes exceeds the \(configuration.maxScreenshotBytes)-byte Firestore limit"
+            } else {
+                switch await putScreenshot(screenshot, reportID: reportID) {
+                case .success:
+                    hasScreenshot = true
+                case .permanentFailure(let reason):
+                    // Losing the image must not lose the report.
+                    document["screenshotError"] = reason
+                case .transientFailure(let reason):
+                    return .transientFailure(reason)
+                }
             }
         }
 
         document["appKey"] = configuration.appKey
-        document["screenshotPath"] = screenshotPath
+        document["hasScreenshot"] = hasScreenshot
         document["status"] = "new"
         document["clientReportId"] = reportID
         document["createdAt"] = FieldValue.serverTimestamp()
@@ -152,22 +165,34 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         }
     }
 
-    // MARK: - Storage
+    // MARK: - Screenshot
 
-    private func putScreenshot(_ data: Data, at path: String) async -> CollieOperationResult<Void> {
-        let metadata = StorageMetadata()
-        metadata.contentType = "image/jpeg"
+    /// Writes the JPEG as base64 into its own document, keyed by the report id so a
+    /// retry overwrites rather than duplicates.
+    private func putScreenshot(
+        _ data: Data,
+        reportID: String
+    ) async -> CollieOperationResult<Void> {
         do {
-            _ = try await storage.reference(withPath: path).putDataAsync(data, metadata: metadata)
+            try await firestore
+                .collection(configuration.screenshotCollection)
+                .document(reportID)
+                .setData([
+                    "appKey": configuration.appKey,
+                    "contentType": "image/jpeg",
+                    "byteSize": data.count,
+                    "data": data.base64EncodedString(),
+                    "createdAt": FieldValue.serverTimestamp(),
+                ], merge: true)
             return .success(())
         } catch {
-            return Self.classify(error, action: "upload the screenshot")
+            return Self.classify(error, action: "write the screenshot")
         }
     }
 
     // MARK: - Error classification
 
-    /// Maps Firebase errors onto the queue's retry policy. Permission/quota/argument
+    /// Maps Firestore errors onto the queue's retry policy. Permission/argument
     /// problems repeat forever, so they are permanent; everything else is worth another
     /// attempt once connectivity returns.
     static func classify<T>(_ error: Error, action: String) -> CollieOperationResult<T> {
@@ -177,16 +202,6 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         if nsError.domain == FirestoreErrorDomain {
             switch FirestoreErrorCode.Code(rawValue: nsError.code) {
             case .permissionDenied, .unauthenticated, .invalidArgument, .failedPrecondition:
-                return .permanentFailure(message)
-            default:
-                return .transientFailure(message)
-            }
-        }
-
-        if nsError.domain == StorageErrorDomain {
-            switch StorageErrorCode(rawValue: nsError.code) {
-            case .unauthenticated, .unauthorized, .quotaExceeded,
-                 .bucketNotFound, .objectNotFound, .projectNotFound:
                 return .permanentFailure(message)
             default:
                 return .transientFailure(message)

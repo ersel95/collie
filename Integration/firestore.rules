@@ -1,0 +1,53 @@
+// Collie — Firestore security rules for the `CollieFirebase` transport.
+//
+// ⚠️ These are the COLLIE-SPECIFIC rules only. If your project already has rules,
+// merge these two `match` blocks into the existing `service cloud.firestore` block
+// rather than deploying this file as-is — deploying replaces the whole ruleset.
+//
+// Threat model: the device writes reports and nothing else. It must not be able to
+// read anyone's reports back, edit them after the fact, or delete them. Everything
+// downstream (the bridge, the panel) runs with a service account or an authenticated
+// analyst, both of which bypass these rules.
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ── Reports: create-only from the app ─────────────────────────────────────
+    match /collie_reports/{reportId} {
+      // The SDK writes exactly once per report; the document id is the report id, so
+      // a retry lands on the same document. `update` is allowed ONLY for that retry
+      // (same appKey, still un-bridged) — never to rewrite someone else's report.
+      allow create: if isWellFormedReport();
+      allow update: if isWellFormedReport()
+                    && request.resource.data.appKey == resource.data.appKey
+                    && resource.data.bridgedAt == null;
+
+      // The device never reads reports back and never removes them. The bridge and
+      // the panel use privileged credentials, which ignore these rules entirely.
+      allow read, delete: if false;
+    }
+
+    // ── Kill switch: readable by the app, writable only from the console ──────
+    match /collie_config/{appKey} {
+      allow read: if true;
+      allow write: if false;
+    }
+  }
+}
+
+// A report must look like one: the app it belongs to, a device it came from, and a
+// size that cannot be used to stuff the database. This is a shape check, not an
+// authentication check — pair it with App Check for that.
+function isWellFormedReport() {
+  return request.resource.data.appKey is string
+      && request.resource.data.appKey.size() > 0
+      && request.resource.data.appKey.size() <= 64
+      && request.resource.data.device is map
+      && request.resource.data.device.id is string
+      && request.resource.data.device.id.size() <= 255
+      && request.resource.data.status == 'new'
+      && request.resource.data.entries is list
+      && request.resource.data.entries.size() <= 5000;
+}

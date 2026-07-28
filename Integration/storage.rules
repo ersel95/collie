@@ -1,0 +1,24 @@
+// Collie — Cloud Storage security rules for the `CollieFirebase` transport.
+//
+// ⚠️ Merge into your existing `service firebase.storage` block; deploying this file
+// as-is replaces the whole ruleset.
+//
+// Screenshots are write-only from the device. The bridge downloads them with a
+// service account, which bypasses these rules.
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /collie/{appKey}/{screenshot} {
+      // One JPEG per report, named after the report id. Bounded so a rogue client
+      // cannot fill the bucket; 8 MB matches the backend's ingestion limit.
+      allow create, update: if request.resource.size < 8 * 1024 * 1024
+                            && request.resource.contentType == 'image/jpeg';
+
+      // The device cannot read screenshots back (they may contain other testers'
+      // account data) and cannot delete them; retention is handled server-side.
+      allow read, delete: if false;
+    }
+  }
+}

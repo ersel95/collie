@@ -54,12 +54,22 @@ public enum Collie {
     /// must come from xcconfig/secrets (non-prod only).
     ///
     /// Idempotent; if called again, the first configuration is kept.
-    public static func configure(with configuration: CollieConfiguration) {
+    ///
+    /// - Parameter transport: Where reports are sent. Defaults to Collie's own HTTPS
+    ///   ingestion client. Pass a custom one — e.g. `FirestoreTransport` from the
+    ///   `CollieFirebase` product — when the host's network policy only permits certain
+    ///   destinations.
+    public static func configure(
+        with configuration: CollieConfiguration,
+        transport: (any ReportTransport)? = nil
+    ) {
         // Gate 1: local opt-in (build-time defense). If off, do nothing.
         guard configuration.enabled else { return }
 
-        // Gate 2: required backend fields — fail-closed.
-        if let error = configuration.validationError {
+        // Gate 2: required backend fields — fail-closed. A custom transport brings its
+        // own destination and credentials, so the HTTPS-ingestion fields are not
+        // required in that case.
+        if transport == nil, let error = configuration.validationError {
             configuration.diagnostics?("[Collie] configure: \(error) — bug reporter not started.")
             return
         }
@@ -67,7 +77,7 @@ public enum Collie {
         // Idempotent: keep the first installation.
         guard box.service == nil else { return }
 
-        let service = BugReportService(configuration: configuration)
+        let service = BugReportService(configuration: configuration, transport: transport)
         box.service = service
 
         // Try to drain the pending (offline) queue.

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Result of a single backend call.
-enum CollieOperationResult<T: Sendable>: Sendable {
+public enum CollieOperationResult<T: Sendable>: Sendable {
     /// Success (2xx).
     case success(T)
     /// Permanent failure (auth/validation/too large). Must not be retried.
@@ -13,13 +13,29 @@ enum CollieOperationResult<T: Sendable>: Sendable {
 
 /// Server-side switches fetched at startup. The kill switch lets the backend turn the
 /// reporter off for an app without shipping a new build.
-struct CollieRemoteConfig: Decodable, Sendable {
-    let captureEnabled: Bool
-    let maxScreenshotBytes: Int?
+public struct CollieRemoteConfig: Decodable, Sendable {
+    public let captureEnabled: Bool
+    public let maxScreenshotBytes: Int?
+
+    public init(captureEnabled: Bool, maxScreenshotBytes: Int? = nil) {
+        self.captureEnabled = captureEnabled
+        self.maxScreenshotBytes = maxScreenshotBytes
+    }
 }
 
-/// Ingestion transport used by the queue (mocked in tests).
-protocol ReportTransport: Sendable {
+/// Where a report goes once the form is submitted.
+///
+/// Collie ships one implementation (`IngestionClient`, a plain HTTPS upload) and the
+/// `CollieFirebase` product adds another (Firestore + Cloud Storage). Hosts whose
+/// network policy only allows certain destinations — a banking app that may talk to
+/// Firebase and its own API, but nowhere else — pick the transport that fits and pass
+/// it to `Collie.configure(with:transport:)`.
+///
+/// The queue owns retries, disk persistence and backoff, so an implementation only has
+/// to perform ONE attempt and classify the outcome:
+/// - `.permanentFailure` — the same call would fail again (auth, validation, too large).
+/// - `.transientFailure` — worth retrying later (offline, 5xx, timeout).
+public protocol ReportTransport: Sendable {
     /// Uploads one report (JSON envelope + optional screenshot); returns the server's
     /// report id on success.
     ///

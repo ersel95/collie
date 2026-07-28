@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.1.0 — 2026-07-28
+
+### Added
+- **`CollieFirebase` product — send reports to Firebase instead of your own endpoint.**
+  Some hosts may only talk to a fixed set of destinations: a banking app allowed to reach
+  Firebase and its own API, and nothing else. `FirestoreTransport` writes the report to
+  Firestore and the screenshot to Cloud Storage, so Collie works inside that policy.
+  - The queue's report id becomes the Firestore **document id**, so a retry after a lost
+    response overwrites the same document instead of creating a second report — the same
+    guarantee the HTTPS transport gets from its idempotency header.
+  - The envelope is stored decoded (not as a blob), so `app` / `device` / `report` /
+    `entries` / `telemetry` stay queryable. Entries remain lossless.
+  - The kill switch reads `collie_config/<appKey>.captureEnabled`; a missing document
+    means capture stays on, matching the HTTPS transport's fail-open behaviour.
+  - Firestore/Storage errors are classified for the queue: permission, quota and
+    argument failures are permanent (dropped), everything else is retried.
+  - Only this product depends on `firebase-ios-sdk`; the core `Collie` library stays
+    dependency-free.
+
+### Changed
+- `ReportTransport`, `CollieOperationResult` and `CollieRemoteConfig` are now **public**,
+  and `Collie.configure(with:transport:)` accepts a custom transport. Hosts can plug in
+  their own destination without forking the SDK.
+- When a custom transport is supplied, the `apiKey` / `apiBaseURL` validation is skipped —
+  that transport carries its own destination and credentials.
+
 ## 1.0.0 — 2026-07-28
 
 ### Changed — BREAKING: the device no longer talks to Jira

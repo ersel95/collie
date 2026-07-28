@@ -105,6 +105,20 @@ public enum Collie {
     }
 
     #if canImport(UIKit)
+    /// Opens the report form directly, skipping the "Spotted a problem?" question.
+    ///
+    /// Use this when the tester has *already* said they want to report — typically when
+    /// handing off from another diagnostics tool (see `onLogoTap`). A shake still goes
+    /// through `asksBeforeReporting`, because a shake can be accidental; a deliberate
+    /// hand-off cannot, so asking again is just a dead click.
+    ///
+    /// No-op when the reporter is off, capture is disabled server-side, or the Collie UI
+    /// is already on screen.
+    @MainActor
+    public static func presentReport() {
+        BugReportBanner.shared.present(askFirst: false)
+    }
+
     /// Registers a handler for taps on the Collie logo in the report sheet's
     /// navigation bar.
     ///

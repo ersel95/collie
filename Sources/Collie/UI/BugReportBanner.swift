@@ -50,23 +50,33 @@ final class BugReportBanner {
     // MARK: - Flow
 
     private func handleShake() {
-        // Gate: don't show the banner when the service is absent (opt-in off) or capture
+        Collie.diag("Shake detected")
+        // Explicit host choice (`CollieConfiguration.asksBeforeReporting`): ask first —
+        // a shake may be accidental — or open the report sheet straight away. Whether
+        // tool switching is wired (`Collie.onLogoTap`) does NOT affect this.
+        present(askFirst: Collie.bugReportService?.configuration.asksBeforeReporting != false)
+    }
+
+    /// Starts the report flow.
+    ///
+    /// - Parameter askFirst: Show the "Spotted a problem?" question before the form.
+    ///   A shake honours `asksBeforeReporting`, because a shake can be accidental. A
+    ///   deliberate entry — the host handing off from another diagnostics tool — passes
+    ///   `false`: the tester already chose to report, so asking again is a dead click.
+    func present(askFirst: Bool) {
+        // Gate: don't show anything when the service is absent (opt-in off) or capture
         // is disabled.
         guard Collie.bugReportService?.isCaptureEnabled == true else { return }
         // Don't repeat while a banner/sheet is already visible.
         guard window == nil else { return }
-        Collie.diag("Shake detected")
-        // Capture the screen at shake time, before the Collie window appears (Collie's
-        // own alert-level windows are excluded from the render anyway).
+        // Capture the screen before the Collie window appears (Collie's own alert-level
+        // windows are excluded from the render anyway).
         pendingScreenshot = ScreenRenderer.renderKeyWindow()
         guard installWindow() else { return }
-        // Explicit host choice (`CollieConfiguration.asksBeforeReporting`): ask first —
-        // a shake may be accidental — or open the report sheet straight away. Whether
-        // tool switching is wired (`Collie.onLogoTap`) does NOT affect this.
-        if Collie.bugReportService?.configuration.asksBeforeReporting == false {
-            presentSheet()
-        } else {
+        if askFirst {
             presentBanner()
+        } else {
+            presentSheet()
         }
     }
 

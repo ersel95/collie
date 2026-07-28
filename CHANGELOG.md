@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.6.0 — 2026-07-28
+
+### Added
+- **`Collie.presentReport()`** — opens the report form directly, skipping the
+  "Spotted a problem?" question. Use it when the tester has already chosen to report,
+  which is the case when handing off from another diagnostics tool via `onLogoTap`:
+  they tapped the Collie logo inside that tool, so asking them again is a dead click.
+  A shake still honours `asksBeforeReporting`, because a shake can be accidental.
+  No-op when the reporter is off, capture is disabled, or the Collie UI is already up.
+
 ## 1.5.1 — 2026-07-28
 
 ### Fixed

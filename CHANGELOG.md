@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.12.0 — 2026-07-28
+
+### Added
+- **A harness app for running the UI on a simulator.** Collie's flow starts with a shake,
+  which no script can trigger on a simulator, so until now the UI could only be checked by
+  hand inside a real host app — which is how two markup implementations shipped broken.
+  `Examples/CollieHarness` links this checkout and calls `presentReport()` from a button,
+  putting the banner, the form and the markup editor one tap away and within reach of UI
+  automation. The generated `.xcodeproj` stays out of the repo; `project.yml` regenerates
+  it.
+
+### Changed
+- **`Integration/firestore.rules` now covers the analyst panel, not just the device.** The
+  panel is a pure client module — no bridge, no server of its own — so the rules are the
+  only thing standing between the reports and the internet. They gain a second caller: an
+  analyst authenticated with Firebase Auth whose row in `collie_analysts` carries the apps
+  they may see and whether they are an admin. Reads, triage updates and deletes are scoped
+  to that list; the device keeps its create-only access and the unauthenticated kill-switch
+  read.
+
+  An analyst cannot widen their own grants — only admins write `collie_analysts`, and an
+  admin may not change the role or active flag on their own row. The Jira PAT in
+  `collie_secrets` is readable only by the uid that owns it, admins included: with no
+  server to hold an encryption key, per-user access control is the protection.
+
+  ⚠️ The file also carries the Android reporter's `bug_reports` collections, which used to
+  fall through to the project-wide test-mode allow-all. They now keep `create` open and
+  restrict reads to analysts — confirm that with the Android team before deploying, and
+  remember that deploying replaces the entire ruleset.
+
 ## 1.11.0 — 2026-07-28
 
 ### Changed

@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.5.1 — 2026-07-28
+
+### Fixed
+- **Releases have been failing silently since 1.1.0.** The Release workflow ran on
+  `macos-14`, whose default toolchain is Swift 5.10 — it cannot parse the `sending`
+  keyword that firebase-ios-sdk uses, so `swift test` died as soon as `CollieFirebase`
+  entered the build graph. Every tag from 1.1.0 to 1.5.0 exists but never produced a
+  GitHub release. The workflow now runs on `macos-15` with the latest stable Xcode (and
+  prints the toolchain, so a repeat is visible in the log).
+  Note this only affected the published release notes: SPM resolves by tag, so hosts
+  pinning those versions were unaffected.
+
 ## 1.5.0 — 2026-07-28
 
 ### Changed

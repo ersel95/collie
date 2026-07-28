@@ -18,9 +18,19 @@ permissions:
 
 jobs:
   release:
-    runs-on: macos-14
+    # macos-14 defaults to Xcode 15 / Swift 5.10, which cannot parse the `sending`
+    # keyword firebase-ios-sdk uses — every release since CollieFirebase was added
+    # (1.1.0) failed there while building fine locally on Swift 6.
+    runs-on: macos-15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
+
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Show toolchain
+        run: swift --version
 
       - name: Run tests (macOS)
         run: swift test

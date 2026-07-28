@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.10.0 — 2026-07-28
+
+### Changed
+- **One tap on the screenshot is now one markup session.** QuickLook wrapped markup in a
+  preview page on both sides: the tester had to tap the markup button to start and Done
+  twice to get back to the form. Collie now opens QuickLook straight into markup and closes
+  the editor once the markup is saved, so tapping the screenshot leads directly to the
+  tools and Done leads directly back to the form.
+
+  Both steps are best-effort: they locate QuickLook's markup button by its accessibility
+  identifier (or the selector it carries), never by its label, and quietly fall back to
+  QuickLook's own navigation if a future release moves it.
+
 ## 1.9.1 — 2026-07-28
 
 ### Fixed

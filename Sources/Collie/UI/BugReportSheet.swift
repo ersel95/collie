@@ -243,9 +243,7 @@ struct BugReportSheet: View {
             .buttonStyle(.plain)
             .disabled(state == .sending)
             .accessibilityLabel("Screenshot — tap to mark up")
-            // The system markup editor opens on the preview page first, with the markup
-            // button in its navigation bar — say so, so nobody stops at the preview.
-            Text("Tap the screenshot, then \(Image(systemName: "pencil.tip.crop.circle")) to mark it up")
+            Text("Tap the screenshot to mark it up")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }

@@ -94,7 +94,11 @@ validation).
     Apple ships next. It edits a temporary PNG and only ever *replaces* the image held by
     the form, so the composer/queue/envelope keep seeing a single `UIImage` and stay
     markup-unaware. Marks a tester draws to hide something must never travel separately
-    from the pixels they cover.
+    from the pixels they cover. One tap on the preview is one markup session: `MarkupEntry`
+    fires QuickLook's markup button (found by accessibility identifier / selector) so the
+    preview page is skipped, and the save callback closes the editor. Both are best-effort
+    by design — when the lookup fails, QuickLook's own navigation is still there, so keep
+    that fallback intact.
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are uploaded in full, with their categories preserved and

@@ -1,45 +1,180 @@
-// Collie — Firestore security rules for the `CollieFirebase` transport.
+// Collie — Firestore security rules.
 //
-// ⚠️ These are the COLLIE-SPECIFIC rules only. If your project already has rules,
-// merge these two `match` blocks into the existing `service cloud.firestore` block
-// rather than deploying this file as-is — deploying replaces the whole ruleset.
+// These rules are the ONLY thing standing between the data and the internet: the
+// analyst panel is a pure client module (no server of its own), and the SDK writes
+// straight from the device. There is no backend left to enforce anything.
 //
-// Threat model: the device writes reports and nothing else. It must not be able to
-// read anyone's reports back, edit them after the fact, or delete them. Everything
-// downstream (the bridge, the panel) runs with a service account or an authenticated
-// analyst, both of which bypass these rules.
+// ⚠️ Deploying this file REPLACES the whole ruleset. The `bug_reports` /
+// `bug_report_screenshots` blocks at the bottom belong to the Android bug reporter
+// (package `com.ykb.ykbde`) — do not drop them, and read the warning above them
+// before touching them.
+//
+// Two kinds of caller:
+//
+// 1. **The device** (Collie SDK, unauthenticated). Creates a report and its
+//    screenshot, reads the kill switch. Nothing else — it may not read reports back,
+//    edit them after the fact, or delete anything.
+// 2. **The analyst** (Firebase Auth email/password, a row in `collie_analysts`).
+//    Reads and triages reports for the apps they are granted, then deletes them once
+//    they are in Jira. An `admin` additionally manages analysts and apps.
+//
+// The Jira PAT never appears here: it lives only in the analyst's browser.
 
 rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Reports: create-only from the app ─────────────────────────────────────
+    // ── Reports ───────────────────────────────────────────────────────────────
     match /collie_reports/{reportId} {
-      // The SDK writes exactly once per report; the document id is the report id, so
-      // a retry lands on the same document. `update` is allowed ONLY for that retry
-      // (same appKey, still un-bridged) — never to rewrite someone else's report.
+      // The device writes exactly once per report; the document id is the report id,
+      // so a retry lands on the same document. `update` from the device is allowed
+      // ONLY for that retry — same app, still untriaged.
       allow create: if isWellFormedReport();
       allow update: if isWellFormedReport()
                     && request.resource.data.appKey == resource.data.appKey
-                    && resource.data.bridgedAt == null;
+                    && resource.data.status == 'new';
 
-      // The device never reads reports back and never removes them. The bridge and
-      // the panel use privileged credentials, which ignore these rules entirely.
-      allow read, delete: if false;
+      // The analyst reads and triages; the panel deletes once the report is in Jira
+      // (Jira becomes the record from that point on).
+      allow read: if canSeeApp(resource.data.appKey);
+      allow update: if canSeeApp(resource.data.appKey)
+                    && request.resource.data.appKey == resource.data.appKey;
+      allow delete: if canSeeApp(resource.data.appKey);
+
+      // Triage history — written by the panel, never by the device.
+      match /events/{eventId} {
+        allow read, create: if canSeeApp(reportAppKey(reportId));
+        allow update, delete: if false;
+      }
     }
 
-    // ── Kill switch: readable by the app, writable only from the console ──────
+    // ── Screenshots ───────────────────────────────────────────────────────────
+    // Kept in their own collection so listing reports never drags base64 images
+    // along. Storage is unavailable on the Spark plan, which is why these are here
+    // at all.
+    match /collie_report_screenshots/{reportId} {
+      allow create: if isWellFormedScreenshot();
+      allow update: if isWellFormedScreenshot()
+                    && request.resource.data.appKey == resource.data.appKey;
+      allow read, delete: if canSeeApp(resource.data.appKey);
+    }
+
+    // ── Kill switch ───────────────────────────────────────────────────────────
+    // The device reads this before capturing, so it must stay world-readable — it
+    // holds no secrets, only `captureEnabled` and size limits. Admins flip it.
     match /collie_config/{appKey} {
       allow read: if true;
-      allow write: if false;
+      allow write: if isAdmin();
+    }
+
+    // ── Apps ──────────────────────────────────────────────────────────────────
+    // Panel-side app records (name, bundle id, Jira project key, retention). The
+    // device never reads these — it only knows its own app key.
+    match /collie_apps/{appKey} {
+      allow read: if isActiveAnalyst();
+      allow write: if isAdmin();
+    }
+
+    // ── Analysts ──────────────────────────────────────────────────────────────
+    // One document per Firebase Auth user, keyed by uid. This is the authorization
+    // table every rule above consults.
+    //
+    // Bootstrap: the FIRST admin must be created by hand in the Firebase console
+    // (Authentication → add user, then a document here with `role: "admin"`).
+    // There is no server to seed it.
+    match /collie_analysts/{uid} {
+      // An analyst may read their own row (the panel needs `apps` and `role`);
+      // admins see everyone.
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+
+      // Only admins grant access. Self-service is deliberately absent — an analyst
+      // must not be able to widen their own `apps` list or promote themselves.
+      allow create, delete: if isAdmin();
+      allow update: if isAdmin()
+                    // An admin may not lock themselves out mid-session; role and
+                    // active flag changes on your own row are rejected.
+                    && (request.auth.uid != uid
+                        || (request.resource.data.role == resource.data.role
+                            && request.resource.data.active == resource.data.active));
+    }
+
+    // ── Per-analyst secrets (Jira PAT) ────────────────────────────────────────
+    // The Jira Personal Access Token — a credential granting full Jira access. There is
+    // no server on the Spark plan to encrypt it with a key nobody else can read, so the
+    // protection here is strict per-user ACCESS CONTROL, not app-level encryption: ONLY
+    // the owner can read or write their own token. Firestore encrypts it at rest.
+    // (An admin cannot read it either — reading is scoped to the uid itself.)
+    match /collie_secrets/{uid} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    // ─────────────────────────────────────────────────────────────────────────
+    // ⚠️ ANDROID BUG REPORTER (`com.ykb.ykbde`) — NOT part of Collie.
+    //
+    // These two collections predate Collie and are written by the Android app's own
+    // reporter. Their rules used to be the project-wide test-mode allow-all; the
+    // block below preserves the only behaviour we have observed (the app writes
+    // reports and screenshots) while closing public reads of everyone's bug data.
+    //
+    // ⚠️ VERIFY WITH THE ANDROID TEAM BEFORE DEPLOYING. If that app also *reads*
+    // these collections back, this will break it. A wrong guess here breaks their
+    // reporting silently.
+    // ─────────────────────────────────────────────────────────────────────────
+    match /bug_reports/{reportId} {
+      allow create: if true;
+      allow read, update, delete: if isActiveAnalyst();
+    }
+    match /bug_report_screenshots/{screenshotId} {
+      allow create: if true;
+      allow read, update, delete: if isActiveAnalyst();
     }
   }
 }
 
-// A report must look like one: the app it belongs to, a device it came from, and a
-// size that cannot be used to stuff the database. This is a shape check, not an
-// authentication check — pair it with App Check for that.
+// ── Caller identity ──────────────────────────────────────────────────────────
+
+function isSignedIn() {
+  return request.auth != null;
+}
+
+function analyst() {
+  return get(/databases/(default)/documents/collie_analysts/$(request.auth.uid)).data;
+}
+
+function analystExists() {
+  return isSignedIn()
+      && exists(/databases/(default)/documents/collie_analysts/$(request.auth.uid));
+}
+
+/// A signed-in analyst whose row has not been deactivated. Deactivation is a flag
+/// rather than a deletion because a pure client cannot delete an Auth user.
+function isActiveAnalyst() {
+  return analystExists() && analyst().active == true;
+}
+
+function isAdmin() {
+  return isActiveAnalyst() && analyst().role == 'admin';
+}
+
+/// Analysts see only the apps they are granted; admins see everything. Reports are
+/// listed with `where('appKey', 'in', <the analyst's apps>)` so the query itself
+/// stays inside what these rules allow.
+function canSeeApp(appKey) {
+  return isActiveAnalyst()
+      && (analyst().role == 'admin' || appKey in analyst().apps);
+}
+
+/// The app a report belongs to, for rules on its subcollections.
+function reportAppKey(reportId) {
+  return get(/databases/(default)/documents/collie_reports/$(reportId)).data.appKey;
+}
+
+// ── Shape checks (the device is unauthenticated, so shape is all we have) ─────
+
+/// A report must look like one: the app it belongs to, a device it came from, and a
+/// size that cannot be used to stuff the database. This is a shape check, not an
+/// authentication check — pair it with App Check for that.
 function isWellFormedReport() {
   return request.resource.data.appKey is string
       && request.resource.data.appKey.size() > 0
@@ -50,4 +185,12 @@ function isWellFormedReport() {
       && request.resource.data.status == 'new'
       && request.resource.data.entries is list
       && request.resource.data.entries.size() <= 5000;
+}
+
+function isWellFormedScreenshot() {
+  return request.resource.data.appKey is string
+      && request.resource.data.appKey.size() > 0
+      && request.resource.data.appKey.size() <= 64
+      && request.resource.data.data is string
+      && request.resource.data.contentType is string;
 }

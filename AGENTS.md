@@ -75,6 +75,11 @@ validation).
   macOS), `Sources/Collie/UI/` sits behind `#if canImport(UIKit)`.
 - Tests: `swift test` (runs on macOS). iOS compile check:
   `swift build --triple arm64-apple-ios17.0-simulator --sdk $(xcrun --sdk iphonesimulator --show-sdk-path)`
+- **Changing the UI? Run it.** `Examples/CollieHarness` is a one-button host app that links
+  this checkout and calls `Collie.presentReport()`, so the banner/form/markup can be driven
+  on a simulator (a shake cannot be triggered from a script). Its README has the xcodegen +
+  simctl + UI-automation commands. Two markup implementations shipped broken because they
+  were only compile-checked — a compiling UI is not a working one.
 - Behaviors that MUST be preserved (do not make breaking changes):
   - Opt-in + fail-closed: `enabled` defaults to `false`; a blank required field
     (`apiKey`, `apiBaseURL`, endpoint paths) means nothing is installed.

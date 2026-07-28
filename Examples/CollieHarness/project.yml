@@ -1,0 +1,36 @@
+# XcodeGen spec for the Collie harness app.
+#
+# Regenerate the project after changing this file:
+#   cd Examples/CollieHarness && xcodegen generate
+#
+# The generated .xcodeproj is NOT committed — it is derived, and it embeds absolute paths.
+name: CollieHarness
+options:
+  bundleIdPrefix: com.collie.harness
+  deploymentTarget:
+    iOS: "17.0"
+packages:
+  Collie:
+    # The package under development, two directories up.
+    path: ../..
+targets:
+  CollieHarness:
+    type: application
+    platform: iOS
+    sources: [Sources]
+    dependencies:
+      - package: Collie
+        product: Collie
+    info:
+      path: Sources/Info.plist
+      properties:
+        UILaunchScreen: {}
+        CFBundleDisplayName: Collie Harness
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.collie.harness
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_VERSION: "5.9"
+        TARGETED_DEVICE_FAMILY: "1"
+        # Nothing here is distributed; skip the signing setup entirely.
+        CODE_SIGNING_ALLOWED: NO

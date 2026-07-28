@@ -17,12 +17,18 @@ the core stays dependency-free.
 **The device never talks to Jira.** No PAT, project key, parent key or assignee exists
 on the device — those decisions belong to the panel.
 
+**Two platforms, one repository.** The Swift package is at the repository root; the Android
+port lives in [`Android/`](Android/) and ships on its own version line (`android-*` tags,
+which SPM ignores). They share the product decisions and the upload envelope, so a report is
+the same document whichever device filed it. Releasing either: [`RELEASING.md`](RELEASING.md).
+
 ## Where to start, by task
 
 | Task | Read |
 |---|---|
-| **Integrating Collie into a host app** | The "Integration" section below + `INTEGRATION.md` (details and troubleshooting) + `Integration/CollieIntegration.swift` (template to copy) |
-| Developing Collie itself | The "Development" section below |
+| **Integrating Collie into an iOS host app** | The "Integration" section below + `INTEGRATION.md` (details and troubleshooting) + `Integration/CollieIntegration.swift` (template to copy) |
+| **Anything Android** | [`Android/AGENTS.md`](Android/AGENTS.md) — layout, commands, and the behaviours that must be preserved there |
+| Developing Collie itself (iOS) | The "Development" section below |
 
 ## Integration (into a host app)
 

@@ -2,16 +2,35 @@
 
 **Shake the device → report it → an analyst pushes it to Jira.**
 
-Collie is a bug-reporter SDK for iOS test builds: when a tester shakes the device, a
+Collie is a bug-reporter SDK for test builds: when a tester shakes the device, a
 bubble slides in from the bottom ("Want to share it?"), a short form is filled out, and
 the report is uploaded. Analysts review it in the panel — screenshot, full log stream,
 network and navigation views — and push it to Jira from there, choosing the issue type,
 parent, assignee and labels.
 
+## Two platforms, one repository
+
+| | Lives in | Install | Docs |
+|---|---|---|---|
+| **iOS** (Swift, SwiftUI) | repository root | Swift Package Manager — see [below](#installation) | this file · [INTEGRATION](INTEGRATION.md) · [AGENTS](AGENTS.md) |
+| **Android** (Kotlin, Compose) | [`Android/`](Android/) | JitPack — see [Android/README](Android/README.md#quick-start) | [Android/README](Android/README.md) · [INTEGRATION](Android/INTEGRATION.md) · [AGENTS](Android/AGENTS.md) |
+
+Both ship on **independent version lines** (`1.12.0` for iOS, `android-0.1.0` for Android), so a
+release on one never forces one on the other — see [RELEASING.md](RELEASING.md). They share the
+product decisions and the upload envelope, so a report filed from either platform is the same
+document and the panel parses one shape.
+
+The Swift package stays at the repository root, so Swift Package Manager resolution is unaffected
+by the Android sources; `android-*` tags are not semver, so SPM ignores them.
+
+**The rest of this file documents the iOS package.** For Android, start at
+**[Android/README.md](Android/README.md)** — and run [`Android/example`](Android/example), a host
+app with Chucker wired in beside Collie.
+
 **Two ways to deliver a report.** The core library POSTs it to your own backend. The
-optional **`CollieFirebase`** product writes it to Firestore instead, for apps whose
-network policy only permits a fixed set of hosts — a server-side bridge feeds those
-reports into the same panel. Only that product pulls in `firebase-ios-sdk`.
+optional **`CollieFirebase`** product (Android: `collie-firebase`) writes it to Firestore
+instead, for apps whose network policy only permits a fixed set of hosts — a server-side
+bridge feeds those reports into the same panel. Only that product pulls in the Firebase SDK.
 
 ```
 Tester shakes the device

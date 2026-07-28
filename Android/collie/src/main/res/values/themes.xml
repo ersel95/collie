@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Collie's screens set their own colours in Compose (see CollieTheme), so this only has
+      to be a plain Material base that does not inherit — or fight — whatever the host app
+      themes its own activities with.
+    -->
+    <style name="Theme.Collie" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>

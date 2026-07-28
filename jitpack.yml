@@ -1,0 +1,14 @@
+# JitPack builds the Android artifacts straight from a git tag, so a release needs no
+# publishing infrastructure of its own: tag, push, done.
+#
+# The Gradle build lives under Android/ (the repository root belongs to the Swift package), so the
+# install step changes into it. JitPack passes the tag through as `-Pversion`, which the build
+# picks up — see Android/build.gradle.kts.
+jdk:
+  - openjdk17
+
+before_install:
+  - sdk install java 17.0.10-tem || true
+
+install:
+  - cd Android && ./gradlew --no-daemon publishToMavenLocal

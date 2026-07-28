@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          The report form and the markup editor. `excludeFromRecents` + `noHistory` keep a
+          half-written report out of the task switcher: it is a debug tool's screen, not part
+          of the host app's navigation.
+        -->
+        <activity
+            android:name="com.collie.ui.CollieReportActivity"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:label="Report a Problem"
+            android:theme="@style/Theme.Collie" />
+    </application>
+
+</manifest>

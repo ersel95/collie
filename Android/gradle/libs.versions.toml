@@ -1,0 +1,60 @@
+[versions]
+# Kept in step with the apps that consume Collie (and with Olaf, which ships alongside it in
+# the same builds), so the library never forces a toolchain upgrade on its host.
+agp = "8.12.2"
+kotlin = "2.1.20"
+compose-bom = "2025.09.00"
+firebase-bom = "34.2.0"
+okhttp = "5.1.0"
+coroutines = "1.10.2"
+androidx-core = "1.17.0"
+activity-compose = "1.10.1"
+lifecycle = "2.9.3"
+junit = "4.13.2"
+json = "20250517"
+# Example app only — Collie itself never depends on Chucker.
+chucker = "4.2.0"
+
+[libraries]
+compose-bom = { module = "androidx.compose:compose-bom", version.ref = "compose-bom" }
+compose-ui = { module = "androidx.compose.ui:ui" }
+compose-runtime = { module = "androidx.compose.runtime:runtime" }
+compose-foundation = { module = "androidx.compose.foundation:foundation" }
+compose-material3 = { module = "androidx.compose.material3:material3" }
+# icons-core only (a few hundred KB); `material-icons-extended` is deliberately avoided.
+compose-material-icons = { module = "androidx.compose.material:material-icons-core" }
+compose-ui-tooling = { module = "androidx.compose.ui:ui-tooling" }
+compose-ui-tooling-preview = { module = "androidx.compose.ui:ui-tooling-preview" }
+
+androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidx-core" }
+androidx-activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
+androidx-lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycle" }
+androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
+androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
+
+# The core's HTTPS transport. `api`, because the host may need to see the types when it
+# supplies its own client.
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+
+# Only `:collie-firebase` links these — the core stays free of any Firebase dependency,
+# exactly as the iOS package keeps `CollieFirebase` a separate product.
+firebase-bom = { module = "com.google.firebase:firebase-bom", version.ref = "firebase-bom" }
+firebase-firestore = { module = "com.google.firebase:firebase-firestore" }
+
+coroutines-core = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
+coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-android", version.ref = "coroutines" }
+coroutines-test = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-test", version.ref = "coroutines" }
+
+chucker = { module = "com.github.chuckerteam.chucker:library", version.ref = "chucker" }
+chucker-no-op = { module = "com.github.chuckerteam.chucker:library-no-op", version.ref = "chucker" }
+
+junit = { module = "junit:junit", version.ref = "junit" }
+# `org.json` ships with Android but is a stub on the JVM — the real implementation is
+# needed for unit tests that exercise the report envelope.
+json = { module = "org.json:json", version.ref = "json" }
+
+[plugins]
+android-library = { id = "com.android.library", version.ref = "agp" }
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }

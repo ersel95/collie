@@ -3,4 +3,12 @@
 xcuserdata/
 .DS_Store
 DerivedData/
-Icon
+Icon
+
+# Android (Android/) — the Gradle build lives beside the Swift package.
+build/
+.gradle/
+.kotlin/
+local.properties
+captures/
+*.iml

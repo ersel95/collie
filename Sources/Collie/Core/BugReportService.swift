@@ -104,7 +104,6 @@ public final class BugReportService: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - whatHappened: The "What happened?" field.
-    ///   - whatExpected: The "What was expected?" field.
     ///   - testerName: Name entered on the first submission (stored afterwards); when
     ///     nil, the stored name is used.
     ///   - screenshotJPEG: The screenshot pre-compressed to JPEG (binary).
@@ -112,7 +111,6 @@ public final class BugReportService: @unchecked Sendable {
     @discardableResult
     public func sendReport(
         whatHappened: String,
-        whatExpected: String,
         testerName: String?,
         screenshotJPEG: Data?,
         identity: CollieDeviceIdentity,
@@ -139,7 +137,6 @@ public final class BugReportService: @unchecked Sendable {
 
         let context = ReportEnvelopeBuilder.ReportContext(
             whatHappened: whatHappened,
-            whatExpected: whatExpected,
             testerName: effectiveName,
             identity: identity,
             telemetry: telemetry,

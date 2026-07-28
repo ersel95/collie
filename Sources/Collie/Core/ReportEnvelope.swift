@@ -7,7 +7,7 @@ import Foundation
 /// {
 ///   "app":       { "bundleId": …, "version": …, "build": …, "environment": … },
 ///   "device":    { "id": …, "name": …, "model": …, "osVersion": …, "locale": …, "screen": … },
-///   "report":    { "whatHappened": …, "whatExpected": …, "capturedAt": …, "sessionId": … },
+///   "report":    { "whatHappened": …, "capturedAt": …, "sessionId": … },
 ///   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
 ///   "telemetry": { /* point-in-time device state, no PII */ }
 /// }
@@ -25,7 +25,6 @@ enum ReportEnvelopeBuilder {
     /// Everything needed to describe one report.
     struct ReportContext: Sendable {
         let whatHappened: String
-        let whatExpected: String
         let testerName: String?
         let identity: CollieDeviceIdentity
         let telemetry: CollieTelemetry?
@@ -62,7 +61,6 @@ enum ReportEnvelopeBuilder {
 
         struct Body: Encodable {
             let whatHappened: String
-            let whatExpected: String
             let capturedAt: Date
             let sessionId: String?
         }
@@ -95,7 +93,6 @@ enum ReportEnvelopeBuilder {
             ),
             report: Envelope.Body(
                 whatHappened: context.whatHappened,
-                whatExpected: context.whatExpected,
                 capturedAt: context.capturedAt,
                 sessionId: context.sessionID.isEmpty ? nil : context.sessionID
             ),

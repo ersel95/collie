@@ -4,9 +4,9 @@ import UIKit
 
 /// The bug report screen (SwiftUI). Presented from the banner's **Yes**.
 ///
-/// - 2 fields: **"What happened?"** → `whatHappened`, **"What was expected?"** → `whatExpected`.
+/// - One field: **"What happened?"** → `whatHappened`.
 /// - On first use (no stored name) a **name** field is shown as well (one time only).
-/// - **Send** button: active once both content fields (after trimming) and, if required,
+/// - **Send** button: active once the description (after trimming) and, if required,
 ///   the name are filled.
 /// - Send → loading → report uploaded to the panel: closes with the report id on success; on a
 ///   transient failure the report is queued and the sheet closes with "queued"; on a
@@ -32,7 +32,7 @@ struct BugReportSheet: View {
 
     /// Fields, in keyboard/focus order.
     private enum Field: Hashable {
-        case name, happened, expected
+        case name, happened
     }
 
     let screenshot: UIImage?
@@ -40,7 +40,6 @@ struct BugReportSheet: View {
     let onClose: (_ outcome: Outcome) -> Void
 
     @State private var whatHappened: String = ""
-    @State private var whatExpected: String = ""
     @State private var testerName: String = ""
     @State private var state: SubmitState = .idle
     @FocusState private var focusedField: Field?
@@ -52,7 +51,7 @@ struct BugReportSheet: View {
 
     /// Focus order of the visible fields (the name only exists on first use).
     private var fieldOrder: [Field] {
-        (requiresName ? [Field.name] : []) + [.happened, .expected]
+        (requiresName ? [Field.name] : []) + [.happened]
     }
 
     private var isLastFieldFocused: Bool {
@@ -70,11 +69,10 @@ struct BugReportSheet: View {
     }
 
     private var trimmedHappened: String { whatHappened.trimmingCharacters(in: .whitespacesAndNewlines) }
-    private var trimmedExpected: String { whatExpected.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedName: String { testerName.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     private var canSend: Bool {
-        guard !trimmedHappened.isEmpty, !trimmedExpected.isEmpty else { return false }
+        guard !trimmedHappened.isEmpty else { return false }
         if requiresName, trimmedName.isEmpty { return false }
         return state != .sending
     }
@@ -97,13 +95,6 @@ struct BugReportSheet: View {
                             field: .happened
                         )
                         .id(Field.happened)
-                        fieldSection(
-                            title: "What was expected?",
-                            placeholder: "What would the correct behavior have been?",
-                            text: $whatExpected,
-                            field: .expected
-                        )
-                        .id(Field.expected)
                         if case let .failed(message) = state {
                             errorBanner(message)
                         }
@@ -295,7 +286,6 @@ struct BugReportSheet: View {
         Task {
             let outcome = await BugReportComposer.send(
                 whatHappened: trimmedHappened,
-                whatExpected: trimmedExpected,
                 testerName: name,
                 screenshot: screenshot
             )

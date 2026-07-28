@@ -12,7 +12,7 @@ push it to Jira from there, choosing the issue type, parent, assignee and labels
 Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
-  → [Yes] → Form: "What happened?" / "What was expected?" (+ name on first use)
+  → [Yes] → Form: "What happened?" (+ name on first use)
   → Backend: POST <reportsPath>  (multipart: report JSON + screenshot, x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff
   → Panel: analyst triages the report and pushes it to Jira
@@ -28,7 +28,7 @@ right person.
 ## Features
 
 - **One request per report** — a multipart upload carrying the JSON envelope (app/device
-  meta, both free-text fields, all log entries, telemetry) and the screenshot. The
+  meta, the description, all log entries, telemetry) and the screenshot. The
   api-key both identifies the app and authenticates the upload.
 - **Opt-in + fail-closed** — off by default; if any required field is missing, nothing
   runs at all.

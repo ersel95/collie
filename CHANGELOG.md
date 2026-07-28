@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.0 — 2026-07-28
+
+### Changed — BREAKING
+- **The report form is down to a single field.** "What was expected?" is gone; a tester
+  now only describes what happened. Reporting the actual behaviour is the part that
+  carries information — the expected behaviour was usually a restatement of it, and
+  making it mandatory doubled the effort of filing a report.
+  - `BugReportService.sendReport(whatHappened:testerName:screenshotJPEG:identity:telemetry:)`
+    no longer takes `whatExpected`.
+  - The upload envelope's `report` object drops `whatExpected` accordingly.
+  - Send is enabled as soon as the description (and, on first use, the name) is filled.
+
 ## 1.2.0 — 2026-07-28
 
 ### Changed — BREAKING (CollieFirebase only)

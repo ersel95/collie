@@ -12,7 +12,6 @@ enum BugReportComposer {
     /// Sends the report.
     static func send(
         whatHappened: String,
-        whatExpected: String,
         testerName: String?,
         screenshot: UIImage?
     ) async -> CollieSubmitOutcome {
@@ -31,7 +30,6 @@ enum BugReportComposer {
 
         return await service.sendReport(
             whatHappened: whatHappened,
-            whatExpected: whatExpected,
             testerName: testerName,
             screenshotJPEG: jpeg,
             identity: identity,

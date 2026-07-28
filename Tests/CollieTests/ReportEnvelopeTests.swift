@@ -33,7 +33,6 @@ final class ReportEnvelopeTests: XCTestCase {
     ) -> ReportEnvelopeBuilder.ReportContext {
         ReportEnvelopeBuilder.ReportContext(
             whatHappened: "Login button did nothing",
-            whatExpected: "It should open the dashboard",
             testerName: testerName,
             identity: makeIdentity(),
             telemetry: telemetry,
@@ -82,11 +81,10 @@ final class ReportEnvelopeTests: XCTestCase {
         XCTAssertEqual(device["screen"] as? String, "1179x2556")
     }
 
-    func testReportSectionCarriesBothFreeTextFields() throws {
+    func testReportSectionCarriesTheDescription() throws {
         let json = try encodeToJSON(makeContext())
         let report = try XCTUnwrap(json["report"] as? [String: Any])
         XCTAssertEqual(report["whatHappened"] as? String, "Login button did nothing")
-        XCTAssertEqual(report["whatExpected"] as? String, "It should open the dashboard")
         XCTAssertEqual(report["sessionId"] as? String, "session-9")
     }
 

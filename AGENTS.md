@@ -88,17 +88,18 @@ validation).
     so a response lost in transit cannot create a second report (`UploadQueueTests`).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
-  - Markup is the **system** editor (`ScreenshotMarkupPreview`: QuickLook in
-    `.updateContents` mode) — do not replace it with a hand-built canvas; a home-grown one
-    loses the "+" tools (text, shapes, signature, magnifier) and stops tracking whatever
-    Apple ships next. It edits a temporary PNG and only ever *replaces* the image held by
-    the form, so the composer/queue/envelope keep seeing a single `UIImage` and stay
-    markup-unaware. Marks a tester draws to hide something must never travel separately
-    from the pixels they cover. One tap on the preview is one markup session: `MarkupEntry`
-    fires QuickLook's markup button (found by accessibility identifier / selector) so the
-    preview page is skipped, and the save callback closes the editor. Both are best-effort
-    by design — when the lookup fails, QuickLook's own navigation is still there, so keep
-    that fallback intact.
+  - Markup (`ScreenshotMarkupEditor`) is **one screen, in Collie's own window**: a
+    `PKCanvasView` over the screenshot plus `MarkupPalette`, Collie's own tool/width/colour
+    bar. One tap on the preview opens it, Done flattens the strokes into the screenshot at
+    its native pixel size and returns. It only ever *replaces* the image held by the form, so
+    the composer/queue/envelope keep seeing a single `UIImage` and stay markup-unaware; marks
+    a tester draws to hide something must never travel separately from the pixels they cover.
+    Two Apple-provided editors were tried and **must not be reintroduced without re-testing
+    on device** (both verified broken on iOS 26, see the file's header comment): QuickLook's
+    editing mode renders out of process, so it stalls on a blank page and hides its buttons
+    from the host; `PKToolPicker` docks into the `UITextEffectsWindow` and is invisible under
+    Collie's overlay window — and reordering the windows to fix that kills touch delivery to
+    the overlay entirely.
   - Shake detection swizzles `UIWindow.motionEnded` and always calls the original
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are uploaded in full, with their categories preserved and

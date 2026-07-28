@@ -46,14 +46,14 @@ struct BugReportSheet: View {
     @State private var whatHappened: String = ""
     @State private var testerName: String = ""
     @State private var state: SubmitState = .idle
-    /// Non-nil while the system markup editor is up, holding the temporary file it edits.
+    /// Non-nil while the markup editor is up, holding the image handed to it.
     @State private var markupSession: MarkupSession?
     @FocusState private var focusedField: Field?
 
-    /// The temporary file handed to QuickLook, identified so SwiftUI can drive the cover.
+    /// Identified so SwiftUI can drive the cover from it.
     private struct MarkupSession: Identifiable {
         let id = UUID()
-        let url: URL
+        let image: UIImage
     }
 
     init(screenshot: UIImage?, onClose: @escaping (_ outcome: Outcome) -> Void) {
@@ -157,8 +157,8 @@ struct BugReportSheet: View {
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(state == .sending)
         .fullScreenCover(item: $markupSession) { session in
-            ScreenshotMarkupPreview(fileURL: session.url) {
-                finishMarkup(session: session)
+            ScreenshotMarkupEditor(image: session.image) { marked in
+                finishMarkup(with: marked)
             }
             .ignoresSafeArea()
         }
@@ -167,25 +167,15 @@ struct BugReportSheet: View {
     // MARK: - Markup
 
     private func startMarkup() {
-        guard let screenshot, let url = ScreenshotMarkupFile.write(screenshot) else { return }
+        guard let screenshot else { return }
         focusedField = nil
-        markupSession = MarkupSession(url: url)
+        markupSession = MarkupSession(image: screenshot)
     }
 
-    /// Always reads the file back rather than tracking whether Markup saved: QuickLook
-    /// reports that from a background queue, and an untouched file simply decodes back to
-    /// the same screenshot.
-    private func finishMarkup(session: MarkupSession) {
-        if let original = screenshot,
-           let marked = ScreenshotMarkupFile.read(session.url, matching: original) {
-            screenshot = marked
-        }
-        ScreenshotMarkupFile.discard(session.url)
-        // QuickLook already animated itself away; a second animated dismissal here would
-        // leave the empty container on screen for the length of it.
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { markupSession = nil }
+    /// `nil` means the tester cancelled — the screenshot stays as it was captured.
+    private func finishMarkup(with marked: UIImage?) {
+        if let marked { screenshot = marked }
+        markupSession = nil
     }
 
     // MARK: - Sections

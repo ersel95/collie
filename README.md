@@ -18,7 +18,7 @@ Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
   → [Yes] → Form: "What happened?" (+ name on first use)
-  → Tap the screenshot → system markup (QuickLook): circle the problem, save
+  → Tap the screenshot → markup opens: circle the problem, Done
   → Backend: POST <reportsPath>  (multipart: report JSON + screenshot, x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff
   → Panel: analyst triages the report and pushes it to Jira
@@ -48,11 +48,11 @@ right person.
 - **Screenshot safety** — the screen is captured at shake time with secure text field
   masks preserved via `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice
   in the form; progressive JPEG compression down to the size limit.
-- **Markup** — tapping the preview in the form opens **the system markup editor**
-  (QuickLook): the same screen iOS shows for a screenshot, with the PencilKit palette and
-  the "+" menu (text, shapes, signature, magnifier, opacity). Saving flattens everything
-  into the screenshot, so the analyst sees exactly what the tester circled. Nothing is
-  uploaded until the form is sent.
+- **Markup** — tapping the preview in the form opens the editor straight away: the
+  screenshot, a PencilKit canvas over it, and a pen / marker / eraser palette with three
+  widths and six colours. Done flattens the marks into the screenshot, so the analyst sees
+  exactly what the tester circled. One tap in, one tap out; nothing is uploaded until the
+  form is sent.
 - **Lossless logs** — ALL entries travel with the report, categories preserved, nothing
   summarized or truncated. The panel keeps the raw stream and derives its Network and
   Navigation views from it.

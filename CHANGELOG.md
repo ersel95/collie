@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.11.0 — 2026-07-28
+
+### Changed
+- **Markup is one screen again — Collie's own.** Tapping the screenshot now opens the
+  editor directly: the screenshot, a PencilKit canvas over it, and a palette with pen /
+  marker / eraser, three widths and six colours. Done flattens the marks and returns to the
+  form. No preview page, no loading state, no second Done.
+
+  This replaces QuickLook (1.9.x), whose UX could not be fixed from the outside. Both of
+  Apple's ready-made editors were measured on an iOS 26 simulator and fail here:
+
+  - **QuickLook** renders the preview *out of process* since iOS 26 (`_EXHostView` hosting a
+    remote scene). It opens on a blank page while that scene loads, always shows its own
+    preview page before markup, and its buttons are not in the host app's view hierarchy at
+    all — so the extra page cannot be skipped programmatically.
+  - **`PKToolPicker`** (1.8.0's palette) docks into the `UITextEffectsWindow` at window
+    level 10, while Collie's UI runs in an overlay window at `.alert + 1` — the palette was
+    drawn 1991 levels below the editor, which is why it never appeared. Reordering the two
+    windows makes it visible but stops the overlay receiving touches at all: no drawing, no
+    Cancel, no Done.
+
+  Collie's palette lives in the same window as the canvas, so neither problem applies.
+
 ## 1.10.0 — 2026-07-28
 
 ### Changed

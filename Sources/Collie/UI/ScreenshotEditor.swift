@@ -1,325 +1,438 @@
 #if canImport(UIKit)
-import QuickLook
+import PencilKit
 import SwiftUI
 import UIKit
 
-/// The **system** markup editor, opened by tapping the screenshot preview in the report
-/// sheet.
+/// The markup editor, opened by tapping the screenshot preview in the report sheet.
 ///
-/// This is QuickLook's editing mode — the very same markup UI iOS shows for a screenshot
-/// or a file: the PencilKit palette (pen, marker, pencil, ruler, eraser, colours) *plus*
-/// the "+" menu that only Markup has (text, shapes, signature, magnifier, opacity). Using
-/// it instead of a hand-built canvas means the tester gets the editor they already know,
-/// and it keeps up with whatever Apple ships next.
+/// One tap in, one tap out: the screenshot and the tools are on screen the moment it opens,
+/// **Done** flattens the marks into the image and returns to the form, **Cancel** throws
+/// them away. Drawing is PencilKit's (`PKCanvasView` — its strokes and its undo stack); the
+/// palette is Collie's own.
 ///
-/// The screenshot is written to a temporary file and previewed in `.updateContents` mode,
-/// so Markup saves the flattened result straight back over that file. The sheet then
-/// reloads it and the rest of the flow (JPEG encoding, upload) carries the annotated
-/// image, never the original.
+/// Two roads were tried and rejected, both verified on an iOS 26 simulator:
 ///
-/// The two pages QuickLook adds around markup are skipped, so one tap on the preview is
-/// one markup session: it opens **straight into** markup (`MarkupEntry`), and closes on
-/// the markup Done rather than dropping the tester back on QuickLook's preview page. Both
-/// are best-effort — if either fails, the plain QuickLook navigation is still there.
+/// - **QuickLook's editing mode** (Collie 1.9.x) renders the preview out of process since
+///   iOS 26 (`_EXHostView` hosting a remote scene): it opens on a blank page while that
+///   scene loads, keeps its own preview page in front of markup, and its buttons live in
+///   another process — three screens and a stall where the tester wanted a pen.
+/// - **`PKToolPicker`** (Collie 1.8.0) docks into the `UITextEffectsWindow`, so against
+///   Collie's overlay window at `.alert + 1` it is drawn 1991 levels too low — invisible.
+///   Reordering the windows makes it visible, but then **the overlay stops receiving touches
+///   altogether**: no drawing, no Cancel, no Done. Its palette is not worth a dead screen.
 @MainActor
-struct ScreenshotMarkupPreview: UIViewControllerRepresentable {
+struct ScreenshotMarkupEditor: UIViewControllerRepresentable {
 
-    /// The temporary file Markup edits in place.
-    let fileURL: URL
-    /// Called on the main actor once the preview closes.
-    let onDismiss: () -> Void
+    let image: UIImage
+    /// Called with the marked-up screenshot, or `nil` when the tester cancelled.
+    let onFinish: (UIImage?) -> Void
 
-    func makeUIViewController(context: Context) -> MarkupContainerViewController {
-        let container = MarkupContainerViewController()
-        // Visible for one frame while QuickLook animates away — a plain background reads as
-        // the sheet's own page rather than as a black flash.
-        container.view.backgroundColor = .systemBackground
-        container.onReady = { [weak container] in
-            guard let container else { return }
-            let preview = QLPreviewController()
-            preview.dataSource = context.coordinator
-            preview.delegate = context.coordinator
-            preview.modalPresentationStyle = .fullScreen
-            // Presented rather than embedded: QuickLook only puts its own Done button up
-            // when it owns the presentation.
-            container.present(preview, animated: false) {
-                context.coordinator.previewDidPresent(preview)
-            }
-        }
-        return container
+    func makeUIViewController(context: Context) -> UINavigationController {
+        let editor = ScreenshotMarkupViewController(image: image, onFinish: onFinish)
+        let navigation = UINavigationController(rootViewController: editor)
+        navigation.navigationBar.isTranslucent = false
+        return navigation
     }
 
-    func updateUIViewController(_ container: MarkupContainerViewController, context: Context) {}
+    func updateUIViewController(_ navigation: UINavigationController, context: Context) {}
+}
 
-    func makeCoordinator() -> Coordinator {
-        Coordinator(fileURL: fileURL, onDismiss: onDismiss)
+/// The screenshot with a `PKCanvasView` laid exactly over it, and the palette below.
+@MainActor
+final class ScreenshotMarkupViewController: UIViewController {
+
+    private let image: UIImage
+    private let onFinish: (UIImage?) -> Void
+
+    private let imageView = UIImageView()
+    private let canvas = PKCanvasView()
+    private lazy var palette = MarkupPalette { [weak self] tool in
+        self?.canvas.tool = tool
     }
 
-    /// ⚠️ QuickLook calls these back from **whatever queue it likes** — the save path runs
-    /// on an `NSFileCoordinator` operation queue, not the main one. So every method here is
-    /// `nonisolated` and touches only immutable state; anything that has to reach the UI
-    /// hops to the main queue first. `MainActor.assumeIsolated` in these callbacks traps
-    /// the process (it did: SIGTRAP on Done, Collie 1.9.0).
-    @MainActor
-    final class Coordinator: NSObject, QLPreviewControllerDataSource, QLPreviewControllerDelegate {
+    init(image: UIImage, onFinish: @escaping (UIImage?) -> Void) {
+        self.image = image
+        self.onFinish = onFinish
+        super.init(nibName: nil, bundle: nil)
+    }
 
-        private nonisolated let item: MarkupItem
-        private let onDismiss: () -> Void
-        private weak var preview: QLPreviewController?
-        /// Both the delegate callback and our own dismissal lead here; whoever arrives
-        /// first wins.
-        private var didFinish = false
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
-        init(fileURL: URL, onDismiss: @escaping () -> Void) {
-            self.item = MarkupItem(url: fileURL)
-            self.onDismiss = onDismiss
-        }
+    // MARK: - Lifecycle
 
-        /// Skips QuickLook's preview page — the tester tapped the screenshot to draw on it,
-        /// so that page is a dead click.
-        func previewDidPresent(_ preview: QLPreviewController) {
-            self.preview = preview
-            MarkupEntry.open(in: preview)
-        }
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        view.backgroundColor = .systemBackground
+        title = "Mark up"
+        installNavigationItems()
 
-        /// Markup saved (the tester tapped Done in the editor): close the whole thing
-        /// instead of leaving them on QuickLook's preview page, one more Done away from the
-        /// form they came from.
-        private func finishAfterSave() {
-            guard !didFinish, let preview, preview.presentingViewController != nil else { return }
-            didFinish = true
-            preview.dismiss(animated: true) { [weak self] in
-                MainActor.assumeIsolated { self?.onDismiss() }
+        imageView.image = image
+        imageView.contentMode = .scaleAspectFit
+        imageView.translatesAutoresizingMaskIntoConstraints = false
+        imageView.layer.cornerRadius = 8
+        imageView.clipsToBounds = true
+
+        canvas.translatesAutoresizingMaskIntoConstraints = false
+        canvas.backgroundColor = .clear
+        canvas.isOpaque = false
+        // Test devices rarely have a Pencil; without this the canvas ignores fingers.
+        canvas.drawingPolicy = .anyInput
+        // The canvas is exactly the screenshot's rect — scrolling would only shift the
+        // strokes away from what they point at.
+        canvas.isScrollEnabled = false
+        canvas.tool = palette.currentTool
+        canvas.delegate = self
+
+        palette.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(imageView)
+        view.addSubview(canvas)
+        view.addSubview(palette)
+        installConstraints()
+    }
+
+    private func installNavigationItems() {
+        navigationItem.leftBarButtonItem = UIBarButtonItem(
+            title: "Cancel",
+            primaryAction: UIAction { [weak self] _ in self?.onFinish(nil) }
+        )
+        let done = UIBarButtonItem(
+            title: "Done",
+            primaryAction: UIAction { [weak self] _ in
+                guard let self else { return }
+                self.onFinish(self.flattened())
             }
-        }
+        )
+        done.style = .done
+        let undo = UIBarButtonItem(
+            image: UIImage(systemName: "arrow.uturn.backward"),
+            primaryAction: UIAction { [weak self] _ in self?.canvas.undoManager?.undo() }
+        )
+        undo.accessibilityLabel = "Undo"
+        undo.isEnabled = false
+        navigationItem.rightBarButtonItems = [done, undo]
+    }
 
-        nonisolated func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+    private var undoItem: UIBarButtonItem? { navigationItem.rightBarButtonItems?.last }
 
-        nonisolated func previewController(
-            _ controller: QLPreviewController,
-            previewItemAt index: Int
-        ) -> QLPreviewItem {
-            item
-        }
+    /// The screenshot is laid out at its own aspect ratio — as large as fits between the
+    /// navigation bar and the palette — so the image view's frame *is* the picture, and the
+    /// canvas can simply match its edges.
+    private func installConstraints() {
+        let guide = view.safeAreaLayoutGuide
+        let aspect = image.size.height > 0 ? image.size.width / image.size.height : 1
 
-        /// Turns the plain preview into an editor: this is what puts the markup button in
-        /// the navigation bar. `.updateContents` writes the edits back over our temporary
-        /// file, so there is no second copy to track.
-        nonisolated func previewController(
-            _ controller: QLPreviewController,
-            editingModeFor previewItem: QLPreviewItem
-        ) -> QLPreviewItemEditingMode {
-            .updateContents
-        }
+        let fitWidth = imageView.widthAnchor.constraint(equalTo: guide.widthAnchor, constant: -16)
+        fitWidth.priority = .defaultHigh
 
-        nonisolated func previewController(
-            _ controller: QLPreviewController,
-            didUpdateContentsOf previewItem: QLPreviewItem
-        ) {
-            closeAfterSave()
-        }
+        NSLayoutConstraint.activate([
+            palette.leadingAnchor.constraint(greaterThanOrEqualTo: guide.leadingAnchor, constant: 12),
+            palette.trailingAnchor.constraint(lessThanOrEqualTo: guide.trailingAnchor, constant: -12),
+            palette.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+            palette.bottomAnchor.constraint(equalTo: guide.bottomAnchor, constant: -12),
 
-        /// QuickLook could not write back in place (permissions, disk) and saved a copy
-        /// elsewhere — move it over our file so the sheet still picks the edits up.
-        /// `FileManager` is thread-safe, so this needs no hop.
-        nonisolated func previewController(
-            _ controller: QLPreviewController,
-            didSaveEditedCopyOf previewItem: QLPreviewItem,
-            at modifiedContentsURL: URL
-        ) {
-            if let destination = item.previewItemURL {
-                try? FileManager.default.removeItem(at: destination)
-                try? FileManager.default.moveItem(at: modifiedContentsURL, to: destination)
-            }
-            closeAfterSave()
-        }
+            imageView.widthAnchor.constraint(equalTo: imageView.heightAnchor, multiplier: aspect),
+            imageView.centerXAnchor.constraint(equalTo: guide.centerXAnchor),
+            imageView.topAnchor.constraint(equalTo: guide.topAnchor, constant: 8),
+            imageView.widthAnchor.constraint(lessThanOrEqualTo: guide.widthAnchor, constant: -16),
+            imageView.bottomAnchor.constraint(lessThanOrEqualTo: palette.topAnchor, constant: -12),
+            fitWidth,
 
-        nonisolated func previewControllerDidDismiss(_ controller: QLPreviewController) {
-            // Explicit hop rather than an isolation assumption: this one does arrive on the
-            // main queue today, but nothing in the API promises it.
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated {
-                    guard !self.didFinish else { return }
-                    self.didFinish = true
-                    self.onDismiss()
-                }
-            }
-        }
+            canvas.topAnchor.constraint(equalTo: imageView.topAnchor),
+            canvas.bottomAnchor.constraint(equalTo: imageView.bottomAnchor),
+            canvas.leadingAnchor.constraint(equalTo: imageView.leadingAnchor),
+            canvas.trailingAnchor.constraint(equalTo: imageView.trailingAnchor)
+        ])
+    }
 
-        /// The save callbacks arrive off the main queue and right as QuickLook is animating
-        /// out of markup — hop, and let that animation land before dismissing on top of it.
-        private nonisolated func closeAfterSave() {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                MainActor.assumeIsolated { self.finishAfterSave() }
-            }
+    // MARK: - Export
+
+    /// Draws the strokes onto the screenshot at its native pixel size. The stroke overlay is
+    /// rasterised at the scale matching those pixels, so marks stay crisp instead of being
+    /// upscaled from the on-screen preview.
+    private func flattened() -> UIImage {
+        let drawing = canvas.drawing
+        let bounds = canvas.bounds
+        guard !drawing.strokes.isEmpty, bounds.width > 0 else { return image }
+
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        let target = CGRect(origin: .zero, size: image.size)
+        let overlay = drawing.image(
+            from: bounds,
+            scale: (image.size.width * image.scale) / bounds.width
+        )
+        return renderer.image { _ in
+            image.draw(in: target)
+            overlay.draw(in: target)
         }
     }
 }
 
-/// Hosts the QuickLook presentation. Presenting from `viewDidAppear` rather than from
-/// `updateUIViewController`: while SwiftUI's cover is still animating in, the container
-/// is not in a window yet and the presentation would be dropped.
-@MainActor
-final class MarkupContainerViewController: UIViewController {
-
-    var onReady: (() -> Void)?
-    private var didPresent = false
-
-    override func viewDidAppear(_ animated: Bool) {
-        super.viewDidAppear(animated)
-        guard !didPresent else { return }
-        didPresent = true
-        onReady?()
+extension ScreenshotMarkupViewController: PKCanvasViewDelegate {
+    nonisolated func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+        MainActor.assumeIsolated {
+            undoItem?.isEnabled = canvasView.undoManager?.canUndo == true
+        }
     }
 }
 
-// MARK: - Opening straight into markup
+// MARK: - Palette
 
-/// Opens QuickLook directly in markup, skipping its preview page.
-///
-/// There is no API for this: editing begins when the tester taps the markup button
-/// QuickLook puts in its overlay. So that button is located and invoked exactly as a tap
-/// would — identified by its **accessibility identifier** (`QLOverlayMarkupButton`) or, for
-/// a bar-button layout, by the **selector** it carries (`enableMarkupMode:`). Both are
-/// language-independent, unlike the button's label.
-///
-/// The button only exists once the item has finished loading, hence the short retry. After
-/// that this gives up quietly and the tester opens markup themselves — which is simply the
-/// behaviour Collie shipped in 1.9.x.
+/// Collie's own markup palette: tool, stroke width and colour, living in the same window as
+/// the canvas — which is the whole point (see `ScreenshotMarkupEditor`).
 @MainActor
-enum MarkupEntry {
+final class MarkupPalette: UIView {
 
-    private static let retryInterval: TimeInterval = 0.1
-    private static let maxAttempts = 20
+    private enum Tool: CaseIterable {
+        case pen, marker, eraser
 
-    static func open(in preview: QLPreviewController, attempt: Int = 0) {
-        // Gone already (dismissed while loading): nothing left to open.
-        guard preview.presentingViewController != nil else { return }
-        if fireControl(in: preview.view) || fireBarItem(in: preview.view) { return }
-        guard attempt < maxAttempts else {
-            Collie.diag("Markup: QuickLook's markup button was not found — the tester opens it.")
-            return
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + retryInterval) {
-            MainActor.assumeIsolated { open(in: preview, attempt: attempt + 1) }
-        }
-    }
-
-    // MARK: Overlay button
-
-    private static func fireControl(in view: UIView) -> Bool {
-        guard let control = markupControl(in: view) else { return false }
-        control.sendActions(for: .touchUpInside)
-        return true
-    }
-
-    private static func markupControl(in view: UIView) -> UIControl? {
-        if let control = view as? UIControl, control.isEnabled,
-           isMarkupIdentifier(control.accessibilityIdentifier) {
-            return control
-        }
-        for subview in view.subviews {
-            if let found = markupControl(in: subview) { return found }
-        }
-        return nil
-    }
-
-    // MARK: Bar button
-
-    private static func fireBarItem(in view: UIView) -> Bool {
-        guard let item = markupItem(in: view),
-              item.isEnabled,
-              let action = item.action,
-              let target = item.target as? NSObject,
-              target.responds(to: action)
-        else { return false }
-        _ = target.perform(action, with: item)
-        return true
-    }
-
-    private static func markupItem(in view: UIView) -> UIBarButtonItem? {
-        var candidates: [UIBarButtonItem] = []
-        if let bar = view as? UINavigationBar {
-            candidates = (bar.items ?? []).flatMap {
-                ($0.rightBarButtonItems ?? []) + ($0.leftBarButtonItems ?? [])
+        var symbol: String {
+            switch self {
+            case .pen: "pencil.tip"
+            case .marker: "highlighter"
+            case .eraser: "eraser"
             }
-        } else if let toolbar = view as? UIToolbar {
-            candidates = toolbar.items ?? []
         }
-        if let match = candidates.first(where: {
-            isMarkupIdentifier($0.accessibilityIdentifier) || isMarkupAction($0.action)
-        }) {
-            return match
-        }
-        for subview in view.subviews {
-            if let found = markupItem(in: subview) { return found }
-        }
-        return nil
-    }
 
-    // MARK: Matching
-
-    private static func isMarkupIdentifier(_ identifier: String?) -> Bool {
-        identifier?.lowercased().contains("markup") == true
-    }
-
-    /// The buttons sharing that bar are Done, Share, Open-in and List; none of their
-    /// selectors carries any of these words, so a match is unambiguous.
-    private static func isMarkupAction(_ selector: Selector?) -> Bool {
-        guard let selector else { return false }
-        let name = NSStringFromSelector(selector).lowercased()
-        return name.contains("markup") || name.contains("annotat")
-    }
-}
-
-/// A file-backed preview item. QuickLook needs an object here, not a bare URL.
-///
-/// `@unchecked Sendable`: both properties are immutable value types, and QuickLook reads
-/// the item from whichever queue it likes — an `NSObject` subclass cannot be inferred
-/// `Sendable` on its own.
-private final class MarkupItem: NSObject, QLPreviewItem, @unchecked Sendable {
-    let previewItemURL: URL?
-    let previewItemTitle: String?
-
-    init(url: URL) {
-        self.previewItemURL = url
-        self.previewItemTitle = "Screenshot"
-    }
-}
-
-// MARK: - Temporary file handling
-
-/// Moves the screenshot to and from the temporary file QuickLook edits in place.
-@MainActor
-enum ScreenshotMarkupFile {
-
-    /// Writes the screenshot out as PNG (lossless: the tester may go in and out of markup
-    /// several times before sending). `nil` when it cannot be written — the caller then
-    /// simply keeps the preview non-interactive.
-    static func write(_ image: UIImage) -> URL? {
-        guard let data = image.pngData() else { return nil }
-        let url = FileManager.default.temporaryDirectory
-            .appendingPathComponent("collie-markup-\(UUID().uuidString).png")
-        do {
-            try data.write(to: url, options: .atomic)
-            return url
-        } catch {
-            Collie.diag("Markup: could not write the temporary screenshot — \(error)")
-            return nil
+        var label: String {
+            switch self {
+            case .pen: "Pen"
+            case .marker: "Marker"
+            case .eraser: "Eraser"
+            }
         }
     }
 
-    /// Reads the marked-up file back, restoring the scale of the original (a PNG on disk
-    /// carries none), so the preview and the upload keep the geometry they started with.
-    static func read(_ url: URL, matching original: UIImage) -> UIImage? {
-        guard let data = try? Data(contentsOf: url), let decoded = UIImage(data: data)
-        else { return nil }
-        guard let cgImage = decoded.cgImage else { return decoded }
-        return UIImage(cgImage: cgImage, scale: original.scale, orientation: .up)
+    /// Thin / medium / thick, per tool — a marker stroke has to be far wider than a pen's to
+    /// read as a highlight.
+    private enum Width: CaseIterable {
+        case thin, medium, thick
+
+        var dotSize: CGFloat {
+            switch self {
+            case .thin: 8
+            case .medium: 13
+            case .thick: 18
+            }
+        }
+
+        var label: String {
+            switch self {
+            case .thin: "thin"
+            case .medium: "medium"
+            case .thick: "thick"
+            }
+        }
+
+        func value(marker: Bool) -> CGFloat {
+            switch self {
+            case .thin: marker ? 14 : 4
+            case .medium: marker ? 24 : 9
+            case .thick: marker ? 38 : 16
+            }
+        }
     }
 
-    static func discard(_ url: URL) {
-        try? FileManager.default.removeItem(at: url)
+    /// Bug-report colours: what a tester circles a defect with. Red first — it is what
+    /// nearly every annotation uses.
+    private static let colors: [(name: String, color: UIColor)] = [
+        ("Red", .systemRed),
+        ("Orange", .systemOrange),
+        ("Yellow", .systemYellow),
+        ("Green", .systemGreen),
+        ("Blue", .systemBlue),
+        ("Black", .label)
+    ]
+
+    private let onToolChange: (PKTool) -> Void
+    private var tool: Tool = .pen
+    private var width: Width = .medium
+    private var colorIndex = 0
+
+    private var toolButtons: [(tool: Tool, button: UIButton)] = []
+    private var widthButtons: [(width: Width, button: UIButton)] = []
+    private var colorButtons: [UIButton] = []
+
+    init(onToolChange: @escaping (PKTool) -> Void) {
+        self.onToolChange = onToolChange
+        super.init(frame: .zero)
+        build()
+        refresh()
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    var currentTool: PKTool { makeTool() }
+
+    // MARK: Layout
+
+    private func build() {
+        let background = UIVisualEffectView(effect: UIBlurEffect(style: .systemThickMaterial))
+        background.translatesAutoresizingMaskIntoConstraints = false
+        background.layer.cornerRadius = 26
+        background.layer.cornerCurve = .continuous
+        background.clipsToBounds = true
+        addSubview(background)
+
+        let tools = UIStackView(arrangedSubviews: Tool.allCases.map { tool in
+            let button = iconButton(symbol: tool.symbol, label: tool.label) { [weak self] in
+                self?.select(tool: tool)
+            }
+            toolButtons.append((tool, button))
+            return button
+        })
+        tools.spacing = 2
+
+        let widths = UIStackView(arrangedSubviews: Width.allCases.map { width in
+            let button = dotButton(size: width.dotSize, label: width.label) { [weak self] in
+                self?.select(width: width)
+            }
+            widthButtons.append((width, button))
+            return button
+        })
+        widths.spacing = 0
+        widths.alignment = .center
+
+        let topRow = UIStackView(arrangedSubviews: [tools, separator(), widths])
+        topRow.alignment = .center
+        topRow.spacing = 10
+
+        let colors = UIStackView(arrangedSubviews: Self.colors.enumerated().map { index, entry in
+            let button = swatchButton(color: entry.color, label: entry.name) { [weak self] in
+                self?.select(colorIndex: index)
+            }
+            colorButtons.append(button)
+            return button
+        })
+        colors.spacing = 10
+
+        let rows = UIStackView(arrangedSubviews: [topRow, colors])
+        rows.axis = .vertical
+        rows.alignment = .center
+        rows.spacing = 8
+        rows.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(rows)
+
+        NSLayoutConstraint.activate([
+            background.topAnchor.constraint(equalTo: topAnchor),
+            background.bottomAnchor.constraint(equalTo: bottomAnchor),
+            background.leadingAnchor.constraint(equalTo: leadingAnchor),
+            background.trailingAnchor.constraint(equalTo: trailingAnchor),
+            rows.topAnchor.constraint(equalTo: topAnchor, constant: 10),
+            rows.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -12),
+            rows.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 16),
+            rows.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -16)
+        ])
+
+        layer.shadowColor = UIColor.black.cgColor
+        layer.shadowOpacity = 0.15
+        layer.shadowRadius = 12
+        layer.shadowOffset = CGSize(width: 0, height: 4)
+    }
+
+    private func iconButton(symbol: String, label: String, action: @escaping () -> Void) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(systemName: symbol)
+        configuration.cornerStyle = .capsule
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 8, leading: 12, bottom: 8, trailing: 12)
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in action() })
+        button.accessibilityLabel = label
+        return button
+    }
+
+    private func dotButton(size: CGFloat, label: String, action: @escaping () -> Void) -> UIButton {
+        var configuration = UIButton.Configuration.plain()
+        configuration.image = UIImage(
+            systemName: "circle.fill",
+            withConfiguration: UIImage.SymbolConfiguration(pointSize: size)
+        )
+        configuration.contentInsets = NSDirectionalEdgeInsets(top: 6, leading: 5, bottom: 6, trailing: 5)
+        let button = UIButton(configuration: configuration, primaryAction: UIAction { _ in action() })
+        button.accessibilityLabel = "Stroke width \(label)"
+        return button
+    }
+
+    private func swatchButton(color: UIColor, label: String, action: @escaping () -> Void) -> UIButton {
+        let button = UIButton(primaryAction: UIAction { _ in action() })
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.backgroundColor = color
+        button.layer.cornerRadius = 15
+        button.layer.borderColor = UIColor.systemBackground.cgColor
+        button.accessibilityLabel = label
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 30),
+            button.heightAnchor.constraint(equalToConstant: 30)
+        ])
+        return button
+    }
+
+    private func separator() -> UIView {
+        let line = UIView()
+        line.translatesAutoresizingMaskIntoConstraints = false
+        line.backgroundColor = .separator
+        NSLayoutConstraint.activate([
+            line.widthAnchor.constraint(equalToConstant: 1),
+            line.heightAnchor.constraint(equalToConstant: 24)
+        ])
+        return line
+    }
+
+    // MARK: Selection
+
+    private func select(tool: Tool) {
+        self.tool = tool
+        refresh()
+    }
+
+    private func select(width: Width) {
+        self.width = width
+        refresh()
+    }
+
+    private func select(colorIndex: Int) {
+        self.colorIndex = colorIndex
+        // Picking a colour while erasing means the tester wants to draw again.
+        if tool == .eraser { tool = .pen }
+        refresh()
+    }
+
+    private func refresh() {
+        let color = Self.colors[colorIndex].color
+        for (candidate, button) in toolButtons {
+            let selected = candidate == tool
+            button.configuration?.baseForegroundColor = selected ? .white : .label
+            button.configuration?.background.backgroundColor = selected ? color : .clear
+            button.accessibilityTraits = selected ? [.button, .selected] : [.button]
+        }
+        for (candidate, button) in widthButtons {
+            let selected = candidate == width
+            button.configuration?.baseForegroundColor = selected ? color : .tertiaryLabel
+            button.accessibilityTraits = selected ? [.button, .selected] : [.button]
+        }
+        for (index, button) in colorButtons.enumerated() {
+            let selected = index == colorIndex && tool != .eraser
+            button.layer.borderWidth = selected ? 3 : 0
+            button.transform = selected ? CGAffineTransform(scaleX: 1.12, y: 1.12) : .identity
+            button.accessibilityTraits = selected ? [.button, .selected] : [.button]
+        }
+        onToolChange(makeTool())
+    }
+
+    private func makeTool() -> PKTool {
+        let color = Self.colors[colorIndex].color
+        switch tool {
+        case .pen:
+            return PKInkingTool(.pen, color: color, width: width.value(marker: false))
+        case .marker:
+            return PKInkingTool(.marker, color: color, width: width.value(marker: true))
+        case .eraser:
+            return PKEraserTool(.bitmap)
+        }
     }
 }
 #endif

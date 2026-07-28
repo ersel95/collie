@@ -19,7 +19,13 @@ let package = Package(
     dependencies: [
         // Only `CollieFirebase` links this. Apps that use the plain HTTPS transport
         // never build it.
-        .package(url: "https://github.com/firebase/firebase-ios-sdk.git", from: "11.0.0")
+        //
+        // Deliberately a WIDE range rather than `from:`: the host app pins its own
+        // Firebase version, and a narrow requirement here makes the two unresolvable
+        // ("root depends on firebase-ios-sdk 12.x" vs "collie depends on 11.x"). The
+        // APIs used — Firestore `setData`, Storage `putDataAsync` — are stable across
+        // these majors.
+        .package(url: "https://github.com/firebase/firebase-ios-sdk.git", "11.0.0"..<"14.0.0")
     ],
     targets: [
         .target(

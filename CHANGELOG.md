@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.1 — 2026-07-28
+
+### Fixed
+- **`CollieFirebase` could not be resolved alongside a host that pins its own Firebase.**
+  The dependency was declared `from: "11.0.0"`, which means `11.0.0..<12.0.0`, so an app
+  already on Firebase 12.x failed to resolve ("root depends on firebase-ios-sdk 12.13.0"
+  vs "collie depends on 11.x"). It is now a wide `11.0.0..<14.0.0` range — the Firestore
+  and Storage APIs used are stable across those majors, and the host keeps deciding the
+  exact version.
+
 ## 1.1.0 — 2026-07-28
 
 ### Added

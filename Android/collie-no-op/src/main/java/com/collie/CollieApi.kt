@@ -46,13 +46,9 @@ public class CollieConfiguration(
 
     public val configUrl: String get() = url(configPath)
 
+    /** Whole URLs, matching the real artifact — see its documentation for why. */
     public val captureExclusionFragments: List<String>
-        get() = buildList {
-            runCatching { java.net.URI(apiBaseUrl).host }.getOrNull()
-                ?.takeIf { it.isNotBlank() }
-                ?.let { add(it.lowercase()) }
-            add(reportsPath)
-        }.filter { it.isNotEmpty() }
+        get() = listOf(reportsUrl, configUrl).filter { it.isNotEmpty() }
 
     private fun url(path: String): String {
         val base = apiBaseUrl.trimEnd('/')

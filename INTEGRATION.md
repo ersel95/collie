@@ -125,6 +125,14 @@ OlafNetworkConfiguration(excludedURLs: ["firestore.googleapis.com"] + existingLi
 OlafNetworkConfiguration(excludedURLs: config.captureExclusionFragments + existingList)
 ```
 
+`captureExclusionFragments` returns the **whole URLs** of Collie's two endpoints, so it is
+safe to match as a substring however your capture tool does it. Before 1.13.0 it returned
+the host and the path separately, which was a trap: with a short `reportsPath` such as
+`/post`, the entry `/post` also matched the app's own `GET /posts` and those requests
+vanished from every report — a failure that looks like nothing at all, because the report
+still uploads, just empty. If you pinned an older version, exclude
+`config.reportsURL.absoluteString` and `config.configURL.absoluteString` instead.
+
 Note: Collie's own `URLSession` carries no capture protocol (primary safeguard); this
 step is the second safeguard.
 

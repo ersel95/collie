@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.13.0 — 2026-07-29
+
+### Fixed
+- **`captureExclusionFragments` could silently empty a report's log stream.** It returned
+  Collie's host and its ingestion path as two *separate* entries, and capture tools match that
+  list as substrings — so a short `reportsPath` matched the host app's own traffic. With
+  `reportsPath = "/post"`, the entry `/post` also matched every `GET /posts` the app made, and
+  those requests never reached the logger. The report still uploaded and still looked fine; it
+  just arrived with the network section missing, and nothing anywhere said why.
+
+  The property now returns the **whole URLs** of Collie's two endpoints (`reportsURL` and
+  `configURL` — the config endpoint was never excluded before either). A full URL cannot match
+  unrelated traffic, so the same one-line integration is now safe whatever path a host
+  configures.
+
+  Found while building the Android example app, which hit it with a real `/post` endpoint.
+  Hosts that pinned an older version and use a short `reportsPath` should exclude
+  `config.reportsURL.absoluteString` / `config.configURL.absoluteString` by hand.
+
 ## 1.12.0 — 2026-07-28
 
 ### Added

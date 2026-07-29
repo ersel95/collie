@@ -169,14 +169,21 @@ public struct CollieConfiguration: Sendable {
         url(appending: configPath)
     }
 
-    /// Recursion prevention: if the host uses a network-capture tool, it should add
-    /// these fragments to that tool's URL exclude list. (Collie's own session carries no
-    /// capture protocol to begin with — this is the second safeguard.)
+    /// Recursion prevention: if the host uses a network-capture tool, it should add these to
+    /// that tool's URL exclude list. (Collie's own session carries no capture protocol to
+    /// begin with — this is the second safeguard.)
+    ///
+    /// These are **whole URLs**, and that matters. Capture tools match their exclude list as
+    /// substrings, and this property used to return the host and the path as two *separate*
+    /// entries — so a short `reportsPath` swallowed unrelated traffic: with `reportsPath =
+    /// "/post"`, the entry `/post` also matched the host app's own `GET /posts`, and every
+    /// one of those requests silently vanished from the logs a tester was trying to report.
+    /// The bug is invisible from the outside: the report uploads fine, it just arrives with
+    /// nothing in it.
+    ///
+    /// A full URL cannot misfire that way — it only matches Collie's own two endpoints.
     public var captureExclusionFragments: [String] {
-        var fragments: [String] = []
-        if let host = apiBaseURL.host { fragments.append(host.lowercased()) }
-        fragments.append(reportsPath)
-        return fragments.filter { !$0.isEmpty }
+        [reportsURL.absoluteString, configURL.absoluteString].filter { !$0.isEmpty }
     }
 
     private func url(appending path: String) -> URL {

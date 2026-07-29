@@ -135,10 +135,15 @@ Metadata key convention (this is what the panel's Network view is built from):
 `Authorization`, `Cookie` and anything equivalent before it goes into an entry. The example does
 this in `putHeaders`.
 
-**Recursion prevention.** Exclude Collie's own uploads from your capture, matching on the whole
-URL (`configuration.reportsUrl`, `configuration.configUrl`). `captureExclusionFragments` exists
-for tools that only take substrings, but it is blunt: a `reportsPath` of `/post` also matches your
-own `/posts` calls and silently drops them from every report.
+**Recursion prevention.** Exclude Collie's own uploads from your capture: pass
+`configuration.captureExclusionFragments`, which returns Collie's two endpoints as whole URLs —
+safe to match as substrings, however your capture tool does it.
+
+Before `android-0.2.0` that property returned the host and the path as separate entries, and a
+short `reportsPath` was a trap: `/post` also matched the app's own `GET /posts`, so those requests
+vanished from every report. Nothing looked wrong — the report still uploaded, just empty. If you
+are pinned to an older version, exclude `configuration.reportsUrl` and `configuration.configUrl`
+instead.
 
 ## 7. Living beside another tool
 

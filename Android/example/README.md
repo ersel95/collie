@@ -40,11 +40,12 @@ on this device. Collie puts that same traffic in front of an analyst later, in a
 the screenshot and the tester's sentence. Chucker exposes no API to read its store, so the traffic
 is captured once by the bridge and handed to both.
 
-**The exclusion list is matched on whole URLs, not fragments.** Collie also offers
-`configuration.captureExclusionFragments` (host and path as separate strings), and this example
-used it first — with `reportsPath = "/post"`, the fragment `/post` also matched the app's own
-`GET /posts`, and every request the tester wanted reported was silently dropped from the report.
-Whole-URL prefixes cannot misfire that way.
+**This example is where a real SDK bug surfaced.** `configuration.captureExclusionFragments` used
+to return Collie's host and path as *separate* strings. With `reportsPath = "/post"`, the entry
+`/post` also matched the app's own `GET /posts` — so every request the tester wanted reported was
+silently dropped, and the report uploaded looking perfectly fine, just empty. It now returns whole
+URLs (iOS 1.13.0 / android-0.2.0), which cannot misfire that way, and the example passes it
+straight through.
 
 ## Two transports, and which one you get
 

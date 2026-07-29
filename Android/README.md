@@ -94,10 +94,11 @@ sits on the same `OkHttpClient` as Chucker. Two things matter:
   them differently and the report still uploads — it just shows a bare log line instead of a
   request.
 - **Exclude Collie's own uploads.** A report is sent over HTTP like anything else; without an
-  exclusion, filing a bug gets logged into the next report. Match on the **whole URL**
-  (`configuration.reportsUrl` / `configuration.configUrl`), not on
-  `captureExclusionFragments` — the fragments are substrings, and a `reportsPath` of `/post`
-  silently swallows your own `/posts` calls. Collie's own client carries none of the host's
+  exclusion, filing a bug gets logged into the next report. Pass
+  `configuration.captureExclusionFragments` — Collie's two endpoints as whole URLs, safe to
+  match as substrings. (Before android-0.2.0 that property returned the host and path
+  separately, and a `reportsPath` of `/post` silently swallowed the app's own `/posts` calls;
+  the example app is where that surfaced.) Collie's own client carries none of the host's
   interceptors either, so this is the second of two safeguards.
 
 ## What is preserved from iOS

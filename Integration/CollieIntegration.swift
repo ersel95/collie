@@ -112,7 +112,8 @@ enum CollieIntegration {
         //
         // Recursion prevention: if your logger captures network traffic, exclude Collie's
         // destination from that capture. With (A) that means the Firebase hosts
-        // ("firestore.googleapis.com"); with (B) use `configuration.captureExclusionFragments`.
+        // ("firestore.googleapis.com"); with (B) use `configuration.captureExclusionFragments`,
+        // which returns Collie's two endpoints as whole URLs — safe to match as substrings.
 
         // (A) Firebase transport. The app key groups reports in the panel.
         Collie.configure(

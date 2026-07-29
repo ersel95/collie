@@ -3,6 +3,19 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.2.0 — 2026-07-29
+
+### Fixed
+- **`captureExclusionFragments` could silently empty a report's log stream** — the same defect
+  fixed in iOS 1.13.0, and the platform where it was found. It returned the host and the
+  ingestion path as two *separate* entries; capture tools match that list as substrings, so a
+  `reportsPath` of `/post` also matched the host app's own `GET /posts` and dropped those
+  requests from every report. The report uploaded and looked fine, just empty.
+
+  It now returns the **whole URLs** of Collie's two endpoints (the config endpoint was never
+  excluded before either). The example app passes the property straight through again instead
+  of working around it.
+
 ## 0.1.1 — 2026-07-29
 
 ### Fixed

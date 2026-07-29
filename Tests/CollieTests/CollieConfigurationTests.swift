@@ -94,10 +94,31 @@ final class CollieConfigurationTests: XCTestCase {
 
     // MARK: - Capture exclusion
 
-    func testCaptureExclusionFragmentsContainHostAndIngestionPath() {
+    func testCaptureExclusionFragmentsAreWholeURLs() {
         let fragments = makeConfig().captureExclusionFragments
-        XCTAssertTrue(fragments.contains("collie.example.com"))
-        XCTAssertTrue(fragments.contains("/api/v1/collie/reports"))
+        XCTAssertTrue(fragments.contains("https://collie.example.com/api/v1/collie/reports"))
+        XCTAssertTrue(fragments.contains("https://collie.example.com/api/v1/collie/config"))
+    }
+
+    /// The regression this property was rewritten for.
+    ///
+    /// Capture tools match the exclude list as substrings. While this returned the host and
+    /// the path separately, a short `reportsPath` matched the host app's own traffic: the
+    /// entry `/post` swallowed every `GET /posts` the app made, so reports arrived with an
+    /// empty log stream and nothing said why.
+    func testAShortReportsPathDoesNotExcludeTheHostAppsOwnTraffic() {
+        var config = makeConfig()
+        config.reportsPath = "/post"
+
+        let fragments = config.captureExclusionFragments
+        let hostAppRequest = "https://api.example.com/v1/posts"
+
+        XCTAssertFalse(
+            fragments.contains { hostAppRequest.contains($0) },
+            "An unrelated request must not match any exclusion entry"
+        )
+        // Collie's own upload still matches, which is the whole point of the list.
+        XCTAssertTrue(fragments.contains { config.reportsURL.absoluteString.contains($0) })
     }
 
     // MARK: - Bounds

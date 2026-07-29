@@ -24,17 +24,15 @@ import java.util.ArrayDeque
  */
 class CollieLogInterceptor(
     /**
-     * Collie's own endpoints, as **whole URLs**. A report is sent over HTTP like anything
-     * else, so without this the act of reporting a bug would be logged into the next report —
-     * and each report would carry the previous one's body.
+     * Collie's own endpoints — pass `configuration.captureExclusionFragments`. A report is
+     * sent over HTTP like anything else, so without this the act of reporting a bug would be
+     * logged into the next report, and each report would carry the previous one's body.
      *
-     * ⚠️ Collie also offers `configuration.captureExclusionFragments`, which is the host/path
-     * pair as separate strings. Matching on those with `contains` is a trap, and this example
-     * fell into it first: with `reportsPath = "/post"`, the fragment `/post` also matches this
-     * app's own `GET /posts` — so every request the tester wanted reported was silently
-     * dropped from the report. Whole-URL prefixes cannot misfire that way. Use the fragments
-     * only where nothing finer is accepted (some capture tools take substrings only), and pick
-     * a specific `reportsPath` when you do.
+     * Those entries are whole URLs, which is what makes matching them safe. They were once
+     * the host and the path as separate strings, and this example is where that broke: with
+     * `reportsPath = "/post"`, the entry `/post` also matched this app's own `GET /posts`, so
+     * every request the tester wanted reported was silently dropped. Fixed in the SDK
+     * (iOS 1.13.0 / android-0.2.0) rather than worked around here.
      */
     private val excludedUrlPrefixes: List<String> = emptyList(),
     private val maxEntries: Int = 500,

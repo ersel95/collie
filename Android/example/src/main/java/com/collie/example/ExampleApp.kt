@@ -58,10 +58,7 @@ class ExampleApp : Application() {
             // Recursion prevention, safeguard #2. Collie's own client carries none of these
             // interceptors to begin with (safeguard #1), but the host's client would happily
             // log a report upload if it ever saw one.
-            //
-            // Whole URLs, not `configuration.captureExclusionFragments` — see the warning on
-            // the constructor: the fragment `/post` would also swallow this app's `/posts`.
-            excludedUrlPrefixes = listOf(configuration.reportsUrl, configuration.configUrl),
+            excludedUrlPrefixes = configuration.captureExclusionFragments,
         )
 
         httpClient = OkHttpClient.Builder()

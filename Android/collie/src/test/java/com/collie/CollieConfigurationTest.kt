@@ -122,10 +122,37 @@ class CollieConfigurationTest {
     // MARK: - Recursion prevention
 
     @Test
-    fun `capture exclusion fragments contain the host and the ingestion path`() {
+    fun `capture exclusion fragments are whole urls`() {
         val fragments = validConfig().captureExclusionFragments
-        assertTrue(fragments.contains("collie.example.com"))
-        assertTrue(fragments.contains("/api/v1/collie/reports"))
+        assertTrue(fragments.contains("https://collie.example.com/api/v1/collie/reports"))
+        assertTrue(fragments.contains("https://collie.example.com/api/v1/collie/config"))
+    }
+
+    /**
+     * The regression this property was rewritten for.
+     *
+     * Capture tools match the exclude list as substrings. While this returned the host and the
+     * path separately, a short `reportsPath` matched the host app's own traffic: the entry
+     * `/post` swallowed every `GET /posts` the app made, so reports arrived with an empty log
+     * stream and nothing said why. The example app hit exactly this.
+     */
+    @Test
+    fun `a short reports path does not exclude the host app's own traffic`() {
+        val config = CollieConfiguration(
+            enabled = true,
+            apiBaseUrl = "https://collie.example.com",
+            apiKey = "test-key",
+            reportsPath = "/post",
+        )
+        val fragments = config.captureExclusionFragments
+        val hostAppRequest = "https://api.example.com/v1/posts"
+
+        assertTrue(
+            "An unrelated request must not match any exclusion entry",
+            fragments.none { hostAppRequest.contains(it) },
+        )
+        // Collie's own upload still matches, which is the whole point of the list.
+        assertTrue(fragments.any { config.reportsUrl.contains(it) })
     }
 
     // MARK: - Clamping

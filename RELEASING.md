@@ -3,13 +3,24 @@
 Both platforms live in this repository but ship on **independent version lines**, so a change to
 one never forces a release of the other.
 
-| Platform | Tag | Consumed as |
-|---|---|---|
-| iOS | `1.12.0` (example) | Swift Package Manager resolves the tag directly from git |
-| Android | `android-0.1.0` (example) | JitPack builds the artifacts from the same tag |
+| Platform | Tag | Release title | Consumed as |
+|---|---|---|---|
+| iOS | `1.12.0` (example) | **iOS 1.12.0** | Swift Package Manager resolves the tag directly from git |
+| Android | `android-0.1.1` (example) | **Android 0.1.1** | JitPack builds the artifacts from the same tag |
 
 `android-*` tags are not semver, so SPM ignores them entirely — the iOS version line stays clean
 no matter how often Android ships.
+
+**The title is what tells the two apart.** The tags cannot be symmetric: SPM only resolves plain
+semver (or a `v` prefix), so iOS cannot take an `ios-` prefix the way Android takes `android-`.
+The release list would then be a mix of `1.12.0` and `android-0.1.1` with no visible platform, so
+the workflow titles every release `iOS <version>` / `Android <version>` — and the notes open with
+the platform plus the exact dependency line to paste.
+
+⚠️ **The "Latest" badge belongs to whichever platform shipped most recently** (a deliberate
+choice — GitHub allows only one). So the version on the repository's front page may be an Android
+one while an iOS consumer is looking for theirs. The README carries a separate badge per platform
+for that reason.
 
 ## The procedure
 

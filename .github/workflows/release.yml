@@ -60,11 +60,26 @@ jobs:
             !grab && index($0, "## " ver " ") == 1 { grab = 1; next }
             grab && /^## / { exit }
             grab { print }
-          ' CHANGELOG.md > release-notes.md
-          if ! [ -s release-notes.md ]; then
+          ' CHANGELOG.md > changelog-section.md
+          if ! [ -s changelog-section.md ]; then
             echo "::error::No CHANGELOG.md section found for $GITHUB_REF_NAME — add '## $GITHUB_REF_NAME — <date>' and re-tag." >&2
             exit 1
           fi
+
+          # Both platforms release from this repository, so every release says up front which
+          # one it is and how to install it — the tag alone does not, and the "Latest" badge
+          # belongs to whichever platform shipped most recently.
+          {
+            echo "**iOS** · Swift Package Manager · [Android releases](https://github.com/ersel95/collie/releases?q=android)"
+            echo
+            echo '```swift'
+            echo ".package(url: \"https://github.com/ersel95/collie.git\", from: \"$GITHUB_REF_NAME\")"
+            echo '```'
+            echo
+            echo "---"
+            echo
+            cat changelog-section.md
+          } > release-notes.md
 
       - name: Create GitHub release
         env:
@@ -74,8 +89,10 @@ jobs:
             echo "Release $GITHUB_REF_NAME already exists — skipping."
             exit 0
           fi
+          # "iOS 1.13.0", not "Collie 1.13.0": the list holds both platforms, and the title is
+          # the only thing that distinguishes them at a glance.
           gh release create "$GITHUB_REF_NAME" \
-            --title "Collie $GITHUB_REF_NAME" \
+            --title "iOS $GITHUB_REF_NAME" \
             --notes-file release-notes.md
 
   android:
@@ -130,7 +147,24 @@ jobs:
             !grab && index($0, "## " ver " ") == 1 { grab = 1; next }
             grab && /^## / { exit }
             grab { print }
-          ' CHANGELOG.md > release-notes.md
+          ' CHANGELOG.md > changelog-section.md
+
+          # Same header as the iOS job, from the other side: which platform, and the exact
+          # coordinates to paste. The version is the tag, so it is copied verbatim.
+          {
+            echo "**Android** · JitPack · [iOS releases](https://github.com/ersel95/collie/releases)"
+            echo
+            echo '```kotlin'
+            echo "debugImplementation(\"com.github.ersel95.collie:collie:$GITHUB_REF_NAME\")"
+            echo "releaseImplementation(\"com.github.ersel95.collie:collie-no-op:$GITHUB_REF_NAME\")"
+            echo "// Firestore transport (optional):"
+            echo "debugImplementation(\"com.github.ersel95.collie:collie-firebase:$GITHUB_REF_NAME\")"
+            echo '```'
+            echo
+            echo "---"
+            echo
+            cat changelog-section.md
+          } > release-notes.md
 
       - name: Create GitHub release
         env:
@@ -140,8 +174,11 @@ jobs:
             echo "Release $GITHUB_REF_NAME already exists — skipping."
             exit 0
           fi
+          # "Android 0.2.0" — the tag already carries the `android-` prefix, so repeating it in
+          # the title ("Collie for Android android-0.2.0") just made it harder to read.
+          version="${GITHUB_REF_NAME#android-}"
           gh release create "$GITHUB_REF_NAME" \
-            --title "Collie for Android $GITHUB_REF_NAME" \
+            --title "Android $version" \
             --notes-file release-notes.md \
             collie/build/outputs/aar/collie-release.aar \
             collie-firebase/build/outputs/aar/collie-firebase-release.aar \

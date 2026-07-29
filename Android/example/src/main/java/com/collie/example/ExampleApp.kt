@@ -9,6 +9,8 @@ import com.chuckerteam.chucker.api.ChuckerInterceptor
 import com.chuckerteam.chucker.api.RetentionManager
 import com.collie.Collie
 import com.collie.CollieConfiguration
+import com.collie.ReportTransport
+import com.collie.firebase.FirestoreTransport
 import okhttp3.OkHttpClient
 import java.util.concurrent.TimeUnit
 
@@ -69,7 +71,15 @@ class ExampleApp : Application() {
             .build()
 
         // ── 3. Start Collie ────────────────────────────────────────────────────────────
-        Collie.configure(context = this, configuration = configuration)
+        // Two transports, one destination. With a google-services.json present the report goes
+        // to Firestore — the path an app takes when its network policy allows Firebase and
+        // nothing else — and the analyst panel reads it from there. Without one, the HTTPS
+        // transport takes over and the example still runs end to end.
+        Collie.configure(
+            context = this,
+            configuration = configuration,
+            transport = if (BuildConfig.COLLIE_USE_FIRESTORE) firestoreTransport() else null,
+        )
 
         // ── 4. Tool switching ──────────────────────────────────────────────────────────
         // Tapping the paw in Collie's top bar closes the report screen and opens Chucker.
@@ -84,6 +94,19 @@ class ExampleApp : Application() {
 
         logs.log("info", "app", "Example app started")
     }
+
+    /**
+     * The report lands in `collie_reports/<reportId>`, its screenshot base64-encoded in
+     * `collie_report_screenshots/<reportId>` — Cloud Storage needs a paid Firebase plan, so it is
+     * deliberately not used. The document id is the queue's report id, so a retry after a lost
+     * response overwrites the same document instead of filing a second report.
+     *
+     * `FirebaseApp` initialises itself from `google-services.json` before `onCreate` runs, so
+     * there is nothing to set up here.
+     */
+    private fun firestoreTransport(): ReportTransport = FirestoreTransport(
+        FirestoreTransport.Configuration(appKey = BuildConfig.COLLIE_APP_KEY),
+    )
 
     private fun chuckerInterceptor(): ChuckerInterceptor {
         val collector = ChuckerCollector(

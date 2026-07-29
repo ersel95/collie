@@ -4,6 +4,17 @@ plugins {
     alias(libs.plugins.kotlin.compose)
 }
 
+// The Firestore transport needs a `google-services.json`, which points at a specific Firebase
+// project — so it is a local file, not a committed one (see .gitignore). When it is present the
+// example writes reports to Firestore, the way an app whose network policy allows Firebase only
+// would; when it is absent the example still builds and runs, falling back to the HTTPS transport
+// against a public echo service. CI takes the second path.
+val firebaseConfig = file("google-services.json")
+val useFirestore = firebaseConfig.exists()
+if (useFirestore) {
+    apply(plugin = "com.google.gms.google-services")
+}
+
 // A realistic host app: it makes real HTTP calls, inspects them with Chucker, and files bug
 // reports with Collie — wired together the way a real project wires them, including the
 // debug/release artifact split that keeps both tools out of a production build.
@@ -24,6 +35,13 @@ android {
         buildConfigField("boolean", "COLLIE_ENABLED", "true")
         buildConfigField("String", "COLLIE_API_BASE_URL", "\"https://postman-echo.com\"")
         buildConfigField("String", "COLLIE_API_KEY", "\"example-api-key\"")
+
+        // Which transport the app wires up at startup.
+        buildConfigField("boolean", "COLLIE_USE_FIRESTORE", useFirestore.toString())
+        // Which app the report belongs to — the panel groups by this, and the key must match an
+        // app record there or the bridge answers "Unknown appKey". Not a secret: write access is
+        // enforced by the Firestore rules, not by keeping this hidden.
+        buildConfigField("String", "COLLIE_APP_KEY", "\"ykb-nl-test\"")
     }
 
     buildTypes {
@@ -60,6 +78,11 @@ dependencies {
 
     debugImplementation(project(":collie"))
     releaseImplementation(project(":collie-no-op"))
+
+    // The Firestore transport, debug-only like the reporter itself. Its release counterpart
+    // lives inside `collie-no-op`, so the single line that builds the transport compiles in
+    // both variants without splitting this file across source sets.
+    debugImplementation(project(":collie-firebase"))
 
     implementation(libs.okhttp)
     implementation(libs.androidx.core.ktx)

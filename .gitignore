@@ -12,3 +12,8 @@ build/
 local.properties
 captures/
 *.iml
+
+# Firebase client config. Points at a specific (here: corporate) project, so it is a local
+# file: the example falls back to its HTTPS transport when this is absent, and CI builds it
+# that way. See Android/example/README.md.
+google-services.json

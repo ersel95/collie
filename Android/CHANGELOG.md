@@ -3,6 +3,27 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.1.1 — 2026-07-29
+
+### Fixed
+- **`FirestoreTransport` rejected every report.** The envelope-to-Firestore conversion built its
+  arrays with `buildList { … get(index) … }`, where `get` resolves to the *list's* own accessor
+  rather than the `JSONArray`'s — so it read index 0 of an empty list and every upload died with
+  `IndexOutOfBoundsException: index: 0, size: 0`. Because a decode failure is classified as
+  *permanent*, the queue then dropped the report instead of retrying it: on 0.1.0 the Firebase
+  path lost reports silently. Anyone on `collie-firebase` should move to 0.1.1.
+
+  The conversion moved to the companion object so it can be tested without a `FirebaseFirestore`,
+  and `EnvelopeConversionTest` now covers it — entries, nested arrays, and JSON nulls.
+- **Decode failures say what went wrong.** The message was a bare "Could not decode the report
+  envelope", which is nothing to debug from when the report has already been dropped. It now
+  carries the exception type and message.
+
+### Changed
+- The example app writes to **Firestore** when a `google-services.json` is present, and falls
+  back to the HTTPS transport when it is not (which is how CI builds it). The file is
+  git-ignored — it points at a specific Firebase project.
+
 ## 0.1.0 — 2026-07-29
 
 First Android release. A port of the iOS SDK rather than a new product: the report a device

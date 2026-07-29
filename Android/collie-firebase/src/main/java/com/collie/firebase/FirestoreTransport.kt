@@ -97,9 +97,13 @@ public class FirestoreTransport @JvmOverloads constructor(
 
         val document = runCatching {
             JSONObject(String(envelope, Charsets.UTF_8)).toFirestoreMap()
-        }.getOrNull() ?: return CollieOperationResult.PermanentFailure(
-            "Could not decode the report envelope",
-        )
+        }.getOrElse { error ->
+            // Carry the reason: this is a permanent failure, so the queue drops the report and
+            // the tester's words are gone — a bare "could not decode" leaves nothing to debug.
+            return CollieOperationResult.PermanentFailure(
+                "Could not decode the report envelope: ${error::class.java.simpleName}: ${error.message}",
+            )
+        }
 
         // 1. Screenshot first: if it fails transiently the whole report is retried, so the
         //    report document never claims an image that was never written.
@@ -190,39 +194,49 @@ public class FirestoreTransport @JvmOverloads constructor(
         classify(error, action = "write the screenshot")
     }
 
-    // MARK: - JSON → Firestore
-
-    /**
-     * Decodes the envelope into maps and lists so the data is queryable in Firestore, rather
-     * than a string blob the panel would have to parse client-side.
-     */
-    private fun JSONObject.toFirestoreMap(): MutableMap<String, Any> {
-        val result = mutableMapOf<String, Any>()
-        keys().forEach { key ->
-            when (val value = get(key)) {
-                is JSONObject -> result[key] = value.toFirestoreMap()
-                is JSONArray -> result[key] = value.toFirestoreList()
-                JSONObject.NULL -> Unit
-                else -> result[key] = value
-            }
-        }
-        return result
-    }
-
-    private fun JSONArray.toFirestoreList(): List<Any> = buildList {
-        for (index in 0 until length()) {
-            when (val value = get(index)) {
-                is JSONObject -> add(value.toFirestoreMap())
-                is JSONArray -> add(value.toFirestoreList())
-                JSONObject.NULL -> Unit
-                else -> add(value)
-            }
-        }
-    }
-
     // MARK: - Error classification
 
     internal companion object {
+
+        // MARK: JSON → Firestore
+
+        /**
+         * Decodes the envelope into maps and lists so the data is queryable in Firestore, rather
+         * than a string blob the panel would have to parse client-side.
+         *
+         * On the companion rather than the instance so it can be tested without a
+         * `FirebaseFirestore` — the conversion is where a report is silently lost, and it needs
+         * a test more than the network call does.
+         */
+        internal fun JSONObject.toFirestoreMap(): MutableMap<String, Any> {
+            val result = mutableMapOf<String, Any>()
+            keys().forEach { key ->
+                when (val value = this.get(key)) {
+                    is JSONObject -> result[key] = value.toFirestoreMap()
+                    is JSONArray -> result[key] = value.toFirestoreList()
+                    JSONObject.NULL -> Unit
+                    else -> result[key] = value
+                }
+            }
+            return result
+        }
+
+        // NOT `buildList { … get(index) … }`: inside that lambda `get` resolves to the *list's*
+        // own accessor rather than the JSONArray's, so it reads index 0 of an empty list and
+        // every report dies with IndexOutOfBoundsException. An explicit local keeps the
+        // receiver honest.
+        internal fun JSONArray.toFirestoreList(): List<Any> {
+            val result = mutableListOf<Any>()
+            for (index in 0 until length()) {
+                when (val value = this.get(index)) {
+                    is JSONObject -> result.add(value.toFirestoreMap())
+                    is JSONArray -> result.add(value.toFirestoreList())
+                    JSONObject.NULL -> Unit
+                    else -> result.add(value)
+                }
+            }
+            return result
+        }
         /**
          * Maps Firestore errors onto the queue's retry policy. Permission/argument problems
          * repeat forever, so they are permanent; everything else is worth another attempt

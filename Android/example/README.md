@@ -12,6 +12,8 @@ cd Android
 ## What to do with it
 
 1. **Load posts** — a real `GET https://jsonplaceholder.typicode.com/posts`.
+   *(Reports go to Firestore when a `google-services.json` is present, to a public echo service
+   otherwise — see [below](#two-transports-and-which-one-you-get).)*
 2. **Open Chucker** — the request is there, with headers, body and timings.
 3. **Break something** — fires a call that 404s. This is the bug.
 4. **Shake the device** (emulator: `adb emu sensor set acceleration 40:40:40`, a few times in
@@ -44,9 +46,20 @@ used it first — with `reportsPath = "/post"`, the fragment `/post` also matche
 `GET /posts`, and every request the tester wanted reported was silently dropped from the report.
 Whole-URL prefixes cannot misfire that way.
 
-## No backend needed
+## Two transports, and which one you get
 
-The example points `apiBaseUrl` at `postman-echo.com`, whose `/post` endpoint accepts the
-multipart upload and answers 200 — enough to walk the "Sent" path end to end without deploying
-anything. Point it at a real Collie backend, or swap in `FirestoreTransport`, and nothing else
-changes.
+The example picks its transport from whether a `google-services.json` sits next to this file:
+
+| `google-services.json` | Transport | Where the report goes |
+|---|---|---|
+| present | `FirestoreTransport` | `collie_reports/<id>` in your Firebase project — the analyst panel reads it from there |
+| absent | HTTPS `IngestionClient` | `postman-echo.com/post`, a public echo service that answers 200 and stores nothing |
+
+That file is **git-ignored**: it points at a specific Firebase project, so it is a local file
+rather than a committed one. Without it the example still builds and runs the whole flow end to
+end — which is also how CI builds it.
+
+To use the Firestore path, drop your project's `google-services.json` in this directory, set
+`COLLIE_APP_KEY` in `build.gradle.kts` to a key that exists in the panel's app records
+(`collie_apps`), and rebuild. A key the panel does not know still writes to Firestore, but the
+report will not be attached to any app there.

@@ -6,13 +6,15 @@ plugins {
     alias(libs.plugins.android.application) apply false
     alias(libs.plugins.kotlin.android) apply false
     alias(libs.plugins.kotlin.compose) apply false
+    // Applied by :example only, and only when a google-services.json is present.
+    alias(libs.plugins.google.services) apply false
 }
 
 // Published version. Locally it is the constant below (kept in step with Android/CHANGELOG.md);
 // on a release build JitPack and CI pass the git tag through `-Pversion`, so the artifact always
 // carries the tag it was built from and nothing has to be edited at release time.
 // iOS keeps its own version line — see /CHANGELOG.md and /RELEASING.md.
-private val localVersion = "0.1.0"
+private val localVersion = "0.1.1"
 val collieVersion by extra(
     (findProperty("version") as? String)
         ?.takeIf { it.isNotBlank() && it != "unspecified" }

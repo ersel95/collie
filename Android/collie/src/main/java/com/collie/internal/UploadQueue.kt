@@ -121,7 +121,7 @@ internal class UploadQueue(
      * Tries to send all pending reports on disk (the ones whose time has come), in order.
      * Idempotent: returns early if already running.
      */
-    internal suspend fun drain() {
+    internal suspend fun drain(retainTransientFailures: Boolean = false) {
         mutex.withLock {
             if (isDraining) return
             isDraining = true
@@ -163,12 +163,21 @@ internal class UploadQueue(
 
                     is StepOutcome.Transient -> {
                         envelope.attempt += 1
-                        if (envelope.attempt > configuration.maxRetryCount) {
+                        if (!retainTransientFailures &&
+                            envelope.attempt > configuration.maxRetryCount
+                        ) {
                             diag("Report exceeded the retry limit, dropped.")
                             remove(envelope)
                         } else {
+                            // WorkManager owns the long-lived retry schedule. Cap the queue's
+                            // own exponent so repeated background runs cannot overflow while the
+                            // report is retained until its TTL.
+                            val backoffAttempt = minOf(
+                                envelope.attempt,
+                                configuration.maxRetryCount,
+                            )
                             val delay =
-                                configuration.baseRetryDelayMillis * 2.0.pow(envelope.attempt)
+                                configuration.baseRetryDelayMillis * 2.0.pow(backoffAttempt)
                             envelope.nextAttemptAtMillis = System.currentTimeMillis() + delay.toLong()
                             writeEnvelope(envelope)
                         }

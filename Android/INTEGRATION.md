@@ -81,6 +81,8 @@ android {
 
 Copy [`Integration/CollieIntegration.kt`](Integration/CollieIntegration.kt) into the app and call
 it from `Application.onCreate()`. That file is not part of the artifact; it exists to be copied.
+Starting from the application is also required for background retries: WorkManager recreates the
+application process, then Collie's worker uses the transport configured there to drain the queue.
 
 Order matters when a logging bridge is involved: build the configuration first (it is what tells
 the bridge which URLs to skip), then the HTTP client, then start Collie.
@@ -174,7 +176,11 @@ If nothing happens:
 |---|---|
 | No banner at all | `enabled` false, or a required field blank — check the `diagnostics` output; Collie stays silently off (fail-closed) |
 | No banner, diagnostics quiet | The panel flipped the app's `captureEnabled` kill switch off |
-| "Queued" on every submission | Backend unreachable (VPN?). The report is on disk and retried; `Collie.flushPendingUploads()` prompts a retry |
+| "Queued" on every submission | Backend unreachable (VPN?). The report is on disk and WorkManager retries it in the background; `Collie.flushPendingUploads()` still prompts an immediate foreground retry |
 | 401 / 403 | api-key wrong or disabled |
 | 400 | Payload rejected — check the envelope against the backend's contract |
 | Report arrives without logs | `logSnapshotProvider` not set, or your exclusion list is swallowing the traffic (see §6) |
+
+Background work survives leaving the app, process death, device restarts and removing the app from
+Recents. Android deliberately suspends all scheduled work after a **Force stop** in system settings;
+opening the app again re-enables it. Uninstalling the app removes both the private queue and its work.

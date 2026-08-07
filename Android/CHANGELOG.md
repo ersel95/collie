@@ -9,7 +9,10 @@ Android ships on its own version line (`android-*` tags); the iOS changelog is
 - Report uploads now time out after 15 seconds by default. A transport that never completes —
   including a Firestore write blocked by a VPN — is classified as a transient failure, persisted
   to the offline queue and reported to the tester as **Queued** instead of leaving the form in an
-  endless loading state. `requestTimeoutMillis` still overrides the default.
+  endless loading state. `requestTimeoutMillis` still overrides the default. A network-constrained
+  WorkManager job now keeps retrying the persisted queue after the app process exits or the device
+  restarts; background transient failures remain on disk until they are sent or reach the 48-hour
+  TTL.
 - The shake confirmation banner and screenshot markup palette now respect Android's navigation
   bar insets, keeping their controls above both three-button and gesture navigation areas.
 

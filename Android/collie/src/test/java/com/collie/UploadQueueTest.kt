@@ -165,6 +165,20 @@ class UploadQueueTest {
         assertEquals(0, queue.pendingCount())
     }
 
+    @Test
+    fun `background retries retain a transient report beyond the foreground limit`() = runTest {
+        val transport = FakeTransport(mutableListOf(CollieOperationResult.TransientFailure("vpn")))
+        val queue = queue(transport)
+        queue.submit(body, null)
+
+        repeat(5) { queue.drain(retainTransientFailures = true) }
+
+        assertEquals(1, queue.pendingCount())
+        transport.outcomes = mutableListOf(CollieOperationResult.Success("server-1"))
+        queue.drain(retainTransientFailures = true)
+        assertEquals(0, queue.pendingCount())
+    }
+
     // MARK: - Idempotency
 
     @Test

@@ -3,6 +3,16 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## Unreleased
+
+### Fixed
+- Report uploads now time out after 15 seconds by default. A transport that never completes —
+  including a Firestore write blocked by a VPN — is classified as a transient failure, persisted
+  to the offline queue and reported to the tester as **Queued** instead of leaving the form in an
+  endless loading state. `requestTimeoutMillis` still overrides the default.
+- The shake confirmation banner and screenshot markup palette now respect Android's navigation
+  bar insets, keeping their controls above both three-button and gesture navigation areas.
+
 ## 0.2.0 — 2026-07-29
 
 ### Fixed

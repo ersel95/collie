@@ -85,8 +85,12 @@ public class CollieConfiguration(
 
     // MARK: - Upload behavior
 
-    /** Timeout for a single request (milliseconds). */
-    public val requestTimeoutMillis: Long = 30_000,
+    /**
+     * Timeout for one complete transport upload (milliseconds). A timeout is treated as a
+     * transient failure so the report moves to the offline queue instead of leaving the form
+     * spinning indefinitely.
+     */
+    public val requestTimeoutMillis: Long = 15_000,
 
     /** Maximum number of attempts for a report in the offline queue. */
     public val maxRetryCount: Int = 5,

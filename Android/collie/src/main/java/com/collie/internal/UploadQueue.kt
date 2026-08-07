@@ -4,6 +4,7 @@ import com.collie.CollieConfiguration
 import com.collie.CollieOperationResult
 import com.collie.CollieSubmitOutcome
 import com.collie.ReportTransport
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -206,16 +207,22 @@ internal class UploadQueue(
         envelope: Envelope,
         reportBody: ByteArray,
         screenshot: ByteArray?,
-    ): StepOutcome = when (
-        val result = transport.upload(
-            reportId = envelope.id,
-            envelope = reportBody,
-            screenshot = screenshot,
+    ): StepOutcome {
+        val result = withTimeoutOrNull(configuration.requestTimeoutMillis) {
+            transport.upload(
+                reportId = envelope.id,
+                envelope = reportBody,
+                screenshot = screenshot,
+            )
+        } ?: CollieOperationResult.TransientFailure(
+            "Upload timed out after ${configuration.requestTimeoutMillis} ms",
         )
-    ) {
-        is CollieOperationResult.Success -> StepOutcome.Done(result.value)
-        is CollieOperationResult.PermanentFailure -> StepOutcome.Rejected(result.reason)
-        is CollieOperationResult.TransientFailure -> StepOutcome.Transient(result.reason)
+
+        return when (result) {
+            is CollieOperationResult.Success -> StepOutcome.Done(result.value)
+            is CollieOperationResult.PermanentFailure -> StepOutcome.Rejected(result.reason)
+            is CollieOperationResult.TransientFailure -> StepOutcome.Transient(result.reason)
+        }
     }
 
     // MARK: - Disk

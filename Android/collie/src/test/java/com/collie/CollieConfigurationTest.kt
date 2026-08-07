@@ -41,6 +41,11 @@ class CollieConfigurationTest {
         assertTrue(validConfig().activatesOnShake)
     }
 
+    @Test
+    fun `request timeout defaults to fifteen seconds`() {
+        assertEquals(15_000L, validConfig().requestTimeoutMillis)
+    }
+
     // MARK: - URLs
 
     @Test

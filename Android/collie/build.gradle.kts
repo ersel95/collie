@@ -43,9 +43,9 @@ dependencies {
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.coroutines.android)
-    // The queue drains when the app returns to the foreground — the iOS side gets this from
-    // the host calling `flushPendingUploads()`; here the process lifecycle owner does it.
-    implementation(libs.androidx.lifecycle.process)
+    // Persistent retry after the host process exits. The worker is only packaged in the real
+    // debug artifact; release builds link `collie-no-op` and carry no background work.
+    implementation(libs.androidx.work.runtime)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

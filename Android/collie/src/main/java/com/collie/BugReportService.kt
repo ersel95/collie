@@ -2,6 +2,7 @@ package com.collie
 
 import android.content.Context
 import com.collie.internal.IngestionClient
+import com.collie.internal.PendingUploadScheduler
 import com.collie.internal.ReportEnvelopeBuilder
 import com.collie.internal.UploadQueue
 import kotlinx.coroutines.CoroutineScope
@@ -49,6 +50,8 @@ public class BugReportService internal constructor(
         directory = UploadQueue.defaultDirectory(appContext.cacheDir),
     )
 
+    private val pendingUploadScheduler = PendingUploadScheduler(appContext, ::diag)
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** Server-side switches. */
@@ -67,7 +70,11 @@ public class BugReportService internal constructor(
     internal fun bootstrap() {
         scope.launch {
             refreshRemoteConfig()
-            queue.drain()
+            // WorkManager also recreates the application before running its worker. Treat the
+            // startup drain as durable background work so repeated process recreation cannot
+            // consume the foreground retry limit and discard a VPN-blocked report.
+            queue.drain(retainTransientFailures = true)
+            scheduleBackgroundRetryIfNeeded()
         }
     }
 
@@ -76,7 +83,23 @@ public class BugReportService internal constructor(
      * foreground or a VPN connection is established).
      */
     public fun flushPendingUploads() {
-        scope.launch { queue.drain() }
+        scope.launch {
+            queue.drain()
+            scheduleBackgroundRetryIfNeeded()
+        }
+    }
+
+    /** Called by WorkManager after the host process has been recreated. */
+    internal suspend fun retryPendingUploadsInBackground(): Boolean {
+        // A background job must not discard a report merely because a VPN stayed active
+        // through several scheduled attempts. Permanent failures and the 48-hour TTL still
+        // remove it; transient failures remain available for the next WorkManager run.
+        queue.drain(retainTransientFailures = true)
+        return queue.pendingCount() == 0
+    }
+
+    private fun scheduleBackgroundRetryIfNeeded() {
+        if (queue.pendingCount() > 0) pendingUploadScheduler.schedule()
     }
 
     // MARK: - Capture gate
@@ -195,7 +218,9 @@ public class BugReportService internal constructor(
             ReportEnvelopeBuilder.makeBody(configuration = configuration, context = context)
         }.getOrNull() ?: return CollieSubmitOutcome.Rejected("Could not build the report envelope")
 
-        return queue.submit(reportBody = reportBody, screenshot = screenshotJpeg)
+        return queue.submit(reportBody = reportBody, screenshot = screenshotJpeg).also { outcome ->
+            if (outcome is CollieSubmitOutcome.Queued) pendingUploadScheduler.schedule()
+        }
     }
 
     internal fun diag(message: String) {

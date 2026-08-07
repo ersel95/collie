@@ -4,6 +4,7 @@ import com.collie.CollieConfiguration
 import com.collie.CollieOperationResult
 import com.collie.CollieSubmitOutcome
 import com.collie.ReportTransport
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONObject
@@ -120,7 +121,7 @@ internal class UploadQueue(
      * Tries to send all pending reports on disk (the ones whose time has come), in order.
      * Idempotent: returns early if already running.
      */
-    internal suspend fun drain() {
+    internal suspend fun drain(retainTransientFailures: Boolean = false) {
         mutex.withLock {
             if (isDraining) return
             isDraining = true
@@ -162,12 +163,21 @@ internal class UploadQueue(
 
                     is StepOutcome.Transient -> {
                         envelope.attempt += 1
-                        if (envelope.attempt > configuration.maxRetryCount) {
+                        if (!retainTransientFailures &&
+                            envelope.attempt > configuration.maxRetryCount
+                        ) {
                             diag("Report exceeded the retry limit, dropped.")
                             remove(envelope)
                         } else {
+                            // WorkManager owns the long-lived retry schedule. Cap the queue's
+                            // own exponent so repeated background runs cannot overflow while the
+                            // report is retained until its TTL.
+                            val backoffAttempt = minOf(
+                                envelope.attempt,
+                                configuration.maxRetryCount,
+                            )
                             val delay =
-                                configuration.baseRetryDelayMillis * 2.0.pow(envelope.attempt)
+                                configuration.baseRetryDelayMillis * 2.0.pow(backoffAttempt)
                             envelope.nextAttemptAtMillis = System.currentTimeMillis() + delay.toLong()
                             writeEnvelope(envelope)
                         }
@@ -206,16 +216,22 @@ internal class UploadQueue(
         envelope: Envelope,
         reportBody: ByteArray,
         screenshot: ByteArray?,
-    ): StepOutcome = when (
-        val result = transport.upload(
-            reportId = envelope.id,
-            envelope = reportBody,
-            screenshot = screenshot,
+    ): StepOutcome {
+        val result = withTimeoutOrNull(configuration.requestTimeoutMillis) {
+            transport.upload(
+                reportId = envelope.id,
+                envelope = reportBody,
+                screenshot = screenshot,
+            )
+        } ?: CollieOperationResult.TransientFailure(
+            "Upload timed out after ${configuration.requestTimeoutMillis} ms",
         )
-    ) {
-        is CollieOperationResult.Success -> StepOutcome.Done(result.value)
-        is CollieOperationResult.PermanentFailure -> StepOutcome.Rejected(result.reason)
-        is CollieOperationResult.TransientFailure -> StepOutcome.Transient(result.reason)
+
+        return when (result) {
+            is CollieOperationResult.Success -> StepOutcome.Done(result.value)
+            is CollieOperationResult.PermanentFailure -> StepOutcome.Rejected(result.reason)
+            is CollieOperationResult.TransientFailure -> StepOutcome.Transient(result.reason)
+        }
     }
 
     // MARK: - Disk

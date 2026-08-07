@@ -9,11 +9,11 @@ import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.FirebaseFirestoreException
 import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.suspendCancellableCoroutine
 import org.json.JSONArray
 import org.json.JSONObject
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
-import kotlin.coroutines.suspendCoroutine
 
 /**
  * Sends reports to **Firebase** instead of an HTTPS endpoint of your own.
@@ -263,17 +263,24 @@ public class FirestoreTransport @JvmOverloads constructor(
 /**
  * Awaits a Play Services [Task] without pulling in `kotlinx-coroutines-play-services`: the
  * host pins its own coroutines and Play Services versions, and one fewer transitive
- * dependency is one fewer resolution conflict to explain.
+ * dependency is one fewer resolution conflict to explain. The continuation is cancellable so
+ * the queue's request timeout can recover when Firestore keeps an offline write pending.
  */
-private suspend fun <T> Task<T>.await(): T = suspendCoroutine { continuation ->
-    addOnSuccessListener { result -> continuation.resume(result) }
-    addOnFailureListener { error -> continuation.resumeWithException(error) }
+internal suspend fun <T> Task<T>.await(): T = suspendCancellableCoroutine { continuation ->
+    addOnSuccessListener { result ->
+        if (continuation.isActive) continuation.resume(result)
+    }
+    addOnFailureListener { error ->
+        if (continuation.isActive) continuation.resumeWithException(error)
+    }
     addOnCanceledListener {
-        continuation.resumeWithException(
-            FirebaseFirestoreException(
-                "The Firestore write was cancelled",
-                FirebaseFirestoreException.Code.CANCELLED,
-            ),
-        )
+        if (continuation.isActive) {
+            continuation.resumeWithException(
+                FirebaseFirestoreException(
+                    "The Firestore write was cancelled",
+                    FirebaseFirestoreException.Code.CANCELLED,
+                ),
+            )
+        }
     }
 }

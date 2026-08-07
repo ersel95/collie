@@ -112,6 +112,9 @@ The behaviours the iOS SDK guarantees are the same here, and the unit tests mirr
 - **Queue idempotency** — the envelope id is reused on every retry (as the
   `x-collie-idempotency-key` header, or as the Firestore document id), so a response lost in
   transit cannot create a second report.
+- **Process-safe retry** — queued reports schedule network-constrained WorkManager work, so the
+  host process can exit and Android will recreate it to retry. The host must configure Collie from
+  `Application.onCreate()`; an Android Force stop pauses scheduled work until the app is opened.
 - **Lossless log stream** — every category the host provides is uploaded, unsummarised.
 - **No PII in telemetry** — no IP, SSID or location, ever.
 - **Markup replaces the image** — the editor only ever hands back a complete replacement, so

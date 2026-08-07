@@ -20,7 +20,7 @@ public class CollieConfiguration(
     public val asksBeforeReporting: Boolean = true,
     public val activatesOnShake: Boolean = true,
     public val environment: String = "staging",
-    public val requestTimeoutMillis: Long = 30_000,
+    public val requestTimeoutMillis: Long = 15_000,
     public val maxRetryCount: Int = 5,
     public val baseRetryDelayMillis: Long = 5_000,
     public val screenshotJpegQuality: Double = 0.7,

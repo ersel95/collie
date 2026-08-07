@@ -49,6 +49,7 @@ dependencies {
     testImplementation(libs.junit)
     // `org.json` is a stub on the JVM; the conversion test needs the real implementation.
     testImplementation(libs.json)
+    testImplementation(libs.coroutines.test)
 }
 
 publishing {

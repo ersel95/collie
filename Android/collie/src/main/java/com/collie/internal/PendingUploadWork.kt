@@ -48,7 +48,10 @@ internal class PendingUploadScheduler(
 
     internal companion object {
         internal const val WORK_NAME: String = "collie-pending-report-upload"
-        private const val BACKOFF_MINUTES: Long = 15
+        // A VPN can still satisfy Android's CONNECTED constraint while blocking Firebase.
+        // Keep retries responsive for UAT without a tight wake-up loop; linear backoff grows
+        // the interval when the VPN remains active for a long session.
+        private const val BACKOFF_MINUTES: Long = 1
     }
 }
 

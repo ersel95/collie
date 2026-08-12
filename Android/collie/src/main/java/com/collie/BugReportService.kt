@@ -1,6 +1,7 @@
 package com.collie
 
 import android.content.Context
+import com.collie.internal.CollieSessionTracker
 import com.collie.internal.IngestionClient
 import com.collie.internal.PendingUploadScheduler
 import com.collie.internal.ReportEnvelopeBuilder
@@ -59,15 +60,28 @@ public class BugReportService internal constructor(
     private val remoteMaxScreenshotBytes = AtomicInteger(0)
 
     /**
-     * When Collie was configured — written into every report as a synthetic
-     * "Session started" log entry.
+     * Logical sessions, the persistent report counters, and the session markers that go into
+     * `entries`. See [CollieSessionTracker].
      */
-    internal val initializedAtMillis: Long = System.currentTimeMillis()
+    internal val sessions = CollieSessionTracker(
+        store = CollieSessionTracker.preferencesStore(appContext),
+    )
+
+    /**
+     * When Collie was configured — written into every report as a synthetic
+     * "Session started" log entry, and as the envelope's `processStartedAt`.
+     */
+    internal val initializedAtMillis: Long get() = sessions.processStartedAtMillis
 
     // MARK: - Lifecycle (called from configure)
 
-    /** Fetches the server-side kill switch and drains the pending queue (once at startup). */
+    /**
+     * Fetches the server-side kill switch and drains the pending queue (once at startup), and
+     * starts watching the background/foreground transitions that end one logical session and
+     * open the next.
+     */
     internal fun bootstrap() {
+        sessions.startObservingLifecycle()
         scope.launch {
             refreshRemoteConfig()
             // WorkManager also recreates the application before running its worker. Treat the
@@ -183,25 +197,22 @@ public class BugReportService internal constructor(
             ?: identity.name
             ?: CollieDeviceIdentity.storedName(appContext)
 
-        // The host's log snapshot — ALL categories, raw entries — plus Collie's own
-        // init marker, inserted at its chronological position so the timeline shows
-        // when Collie started.
+        // Whole seconds: `capturedAt` is stored as the next report's `previousReportAt`, and
+        // both are encoded by a formatter that drops the milliseconds. Rounding down here
+        // means the two strings are identical rather than a fraction of a second apart — the
+        // panel compares them for equality to place the fold boundary.
+        val capturedAtMillis = (System.currentTimeMillis() / 1_000L) * 1_000L
+        val stamp = sessions.stampForReport(capturedAtMillis)
+
+        // The host's log snapshot — ALL categories, raw entries, nothing dropped — plus
+        // Collie's own session markers, merged in at their chronological positions so the
+        // timeline shows where this session began, where it resumed after a long background,
+        // and where the previous report was filed.
         val hostEntries = configuration.logSnapshotProvider?.invoke().orEmpty()
-        val initEntry = CollieLogEntry(
-            epochMillis = initializedAtMillis,
-            level = "info",
-            category = "collie",
-            message = "Session started — ${ReportEnvelopeBuilder.dateTimeString(initializedAtMillis)}",
+        val entries = CollieSessionTracker.merge(
+            hostEntries = hostEntries,
+            markers = CollieSessionTracker.markerEntries(stamp),
         )
-        val insertIndex = hostEntries
-            .indexOfFirst { it.epochMillis > initializedAtMillis }
-            .takeIf { it >= 0 }
-            ?: hostEntries.size
-        val entries = buildList {
-            addAll(hostEntries.subList(0, insertIndex))
-            add(initEntry)
-            addAll(hostEntries.subList(insertIndex, hostEntries.size))
-        }
 
         val context = ReportEnvelopeBuilder.ReportContext(
             whatHappened = whatHappened,
@@ -209,9 +220,9 @@ public class BugReportService internal constructor(
             identity = identity,
             telemetry = telemetry,
             sessionId = configuration.sessionIdProvider?.invoke().orEmpty(),
-            capturedAtMillis = System.currentTimeMillis(),
-            collieInitializedAtMillis = initializedAtMillis,
+            capturedAtMillis = capturedAtMillis,
             entries = entries,
+            session = stamp,
         )
 
         val reportBody = runCatching {

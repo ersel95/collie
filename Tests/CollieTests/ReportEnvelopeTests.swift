@@ -25,11 +25,25 @@ final class ReportEnvelopeTests: XCTestCase {
         )
     }
 
+    private func makeStamp(
+        previousReportAt: Date? = Date(timeIntervalSince1970: 1_699_998_000)
+    ) -> CollieSessionTracker.ReportStamp {
+        CollieSessionTracker.ReportStamp(
+            processStartedAt: Date(timeIntervalSince1970: 1_699_990_000),
+            sessionStartedAt: Date(timeIntervalSince1970: 1_699_999_000),
+            sessionOrdinal: 7,
+            previousReportAt: previousReportAt,
+            sequence: 3,
+            resumes: []
+        )
+    }
+
     private func makeContext(
         testerName: String? = "Ada L.",
         sessionID: String = "session-9",
         entries: [CollieLogEntry] = [],
-        telemetry: CollieTelemetry? = nil
+        telemetry: CollieTelemetry? = nil,
+        session: CollieSessionTracker.ReportStamp? = nil
     ) -> ReportEnvelopeBuilder.ReportContext {
         ReportEnvelopeBuilder.ReportContext(
             whatHappened: "Login button did nothing",
@@ -38,8 +52,8 @@ final class ReportEnvelopeTests: XCTestCase {
             telemetry: telemetry,
             sessionID: sessionID,
             capturedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            collieInitializedAt: Date(timeIntervalSince1970: 1_699_999_000),
-            entries: entries
+            entries: entries,
+            session: session
         )
     }
 
@@ -93,6 +107,56 @@ final class ReportEnvelopeTests: XCTestCase {
         let json = try encodeToJSON(makeContext())
         let report = try XCTUnwrap(json["report"] as? [String: Any])
         XCTAssertEqual(report["capturedAt"] as? String, "2023-11-14T22:13:20Z")
+    }
+
+    // MARK: - Session context (the panel's fold boundary)
+
+    /// The five fields the panel folds a report's repeated history with, plus the platform
+    /// it no longer has to guess from the bundle id.
+    func testSessionContextIsEncoded() throws {
+        let json = try encodeToJSON(makeContext(session: makeStamp()))
+        let report = try XCTUnwrap(json["report"] as? [String: Any])
+        XCTAssertEqual(report["platform"] as? String, "ios")
+        XCTAssertEqual(report["previousReportAt"] as? String, "2023-11-14T21:40:00Z")
+        XCTAssertEqual(report["sessionStartedAt"] as? String, "2023-11-14T21:56:40Z")
+        XCTAssertEqual(report["processStartedAt"] as? String, "2023-11-14T19:26:40Z")
+        XCTAssertEqual(report["sessionOrdinal"] as? Int, 7)
+        XCTAssertEqual(report["sequence"] as? Int, 3)
+    }
+
+    /// The boundary is found by *comparing* `previousReportAt` with the entry timestamps,
+    /// so every one of them has to carry an offset. A bare `2023-11-14T21:40:00` would be
+    /// read in the browser's timezone and slide the fold by hours.
+    func testSessionTimestampsCarryAnOffset() throws {
+        let json = try encodeToJSON(makeContext(session: makeStamp()))
+        let report = try XCTUnwrap(json["report"] as? [String: Any])
+        for key in ["capturedAt", "previousReportAt", "sessionStartedAt", "processStartedAt"] {
+            let value = try XCTUnwrap(report[key] as? String, "\(key) is missing")
+            XCTAssertTrue(
+                value.hasSuffix("Z") || value.contains("+") || value.dropFirst(11).contains("-"),
+                "\(key) has no UTC offset: \(value)"
+            )
+        }
+    }
+
+    /// The first report from a device has no predecessor — the field must be absent, not
+    /// an invented timestamp.
+    func testPreviousReportAtIsOmittedOnTheFirstReport() throws {
+        let json = try encodeToJSON(makeContext(session: makeStamp(previousReportAt: nil)))
+        let report = try XCTUnwrap(json["report"] as? [String: Any])
+        XCTAssertNil(report["previousReportAt"])
+        XCTAssertNotNil(report["sessionStartedAt"])
+    }
+
+    /// The panel renders a report without these fields exactly as it did before they
+    /// existed, which is what keeps older SDK versions working. They stay optional.
+    func testSessionContextIsOmittedWhenAbsent() throws {
+        let json = try encodeToJSON(makeContext(session: nil))
+        let report = try XCTUnwrap(json["report"] as? [String: Any])
+        for key in ["previousReportAt", "sessionStartedAt", "processStartedAt", "sessionOrdinal", "sequence"] {
+            XCTAssertNil(report[key], "\(key) should be omitted")
+        }
+        XCTAssertEqual(report["whatHappened"] as? String, "Login button did nothing")
     }
 
     /// An absent session must be omitted rather than sent as an empty string.

@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.14.0 — 2026-08-12
+
+### Added
+- **Session context on every report, so the panel can fold a tester's repeated history.**
+  Testers do not kill the app: the log stream lives as long as the process, so the tenth
+  report from a device carried the nine earlier reports' navigation and network history and
+  the part that was actually new drowned in the repetition — in the panel and in the Jira
+  issue alike.
+
+  The report block now carries five optional fields — `previousReportAt`, `sessionStartedAt`,
+  `processStartedAt`, `sessionOrdinal`, `sequence` — plus `platform: "ios"`, which the panel
+  previously had to guess from the bundle id. The panel collapses everything older than the
+  boundary (`previousReportAt`, or `sessionStartedAt` for a device's first report) into an
+  expandable block and leaves the newer part open.
+
+  **Nothing is dropped.** `entries` are still uploaded in full: an `appConfig` or `login`
+  call fired once at session start is inside the collapsed block, one click away, not gone.
+  This release adds metadata and three synthetic `category: "collie"` markers at their
+  chronological positions — `Session started`, `Session resumed after N min background`, and
+  `Previous report submitted`, whose timestamp is exactly `previousReportAt` so it renders as
+  the line under the collapsed block.
+
+  A **logical session** starts at `Collie.configure` and starts over when the app returns
+  from 30+ minutes in the background (the same threshold the Android SDK uses, so one
+  scenario cannot fold differently on the two platforms). `sequence`, `sessionOrdinal` and
+  `previousReportAt` live in `UserDefaults` and survive a kill; `processStartedAt` is the one
+  field that resets with the process.
+
+  All five fields are **optional and stay optional** — a panel report from an older SDK
+  renders exactly as it did before, so nothing has to be upgraded in step. Hosts need no
+  integration change at all: the fields appear on the next build.
+
 ## 1.13.0 — 2026-07-29
 
 ### Fixed

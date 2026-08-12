@@ -3,7 +3,38 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
-## Unreleased
+## 0.3.0 — 2026-08-12
+
+### Added
+- **Session context on every report, so the panel can fold a tester's repeated history** —
+  the Android half of iOS 1.14.0, field for field. Testers do not kill the app: the log
+  stream lives as long as the process, so the tenth report from a device carried the nine
+  earlier reports' navigation and network history and the part that was actually new drowned
+  in the repetition.
+
+  The report block now carries five optional fields — `previousReportAt`, `sessionStartedAt`,
+  `processStartedAt`, `sessionOrdinal`, `sequence` — plus `platform: "android"`, which the
+  panel previously had to guess from the package name (`com.example.android.uat` → Android,
+  and nothing at all when the name does not spell it out). The panel collapses everything
+  older than the boundary into an expandable block and leaves the newer part open.
+
+  **Nothing is dropped.** `entries` are still uploaded in full; this adds metadata and three
+  synthetic `category = "collie"` markers at their chronological positions — `Session
+  started`, `Session resumed after N min background`, and `Previous report submitted`, whose
+  timestamp is exactly `previousReportAt` so it renders as the line under the collapsed
+  block.
+
+  A **logical session** starts at `Collie.configure` and starts over when the app returns
+  from 30+ minutes in the background (`ProcessLifecycleOwner`, and the same threshold the iOS
+  SDK uses, so one scenario cannot fold differently on the two platforms). `sequence`,
+  `sessionOrdinal` and `previousReportAt` are persisted and survive a kill;
+  `processStartedAt` is the one field that resets with the process. Every timestamp is
+  ISO-8601 **with an offset** — the boundary is found by comparing them, and a zone-less
+  stamp would be read in the browser's timezone and slide the fold by hours.
+
+  All five fields are **optional and stay optional** — a report from an older SDK renders
+  exactly as it did before. Hosts need no integration change: the fields appear on the next
+  build.
 
 ### Fixed
 - Report uploads now time out after 15 seconds by default. A transport that never completes —

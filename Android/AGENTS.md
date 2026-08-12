@@ -56,7 +56,18 @@ changes:
   the app from the api-key; the Firestore transport adds `appKey` on top). `ReportEnvelopeTest`
   locks the shape in, and it must keep matching `ReportEnvelopeTests.swift`.
 - **Lossless entries.** Every category the host provides is uploaded, unsummarised — the panel
-  derives its network and navigation views from that raw stream.
+  derives its network and navigation views from that raw stream. Collie adds its own
+  `category = "collie"` markers at their chronological positions and changes nothing else.
+- **Session context** (`CollieSessionTracker`). The fields the panel folds a report's repeated
+  history with, because testers never kill the app and the tenth report otherwise repeats the
+  first nine. `report.previousReportAt` / `sessionStartedAt` / `processStartedAt` /
+  `sessionOrdinal` / `sequence` stay **optional** — a report without them renders as it always
+  did, which is what keeps older SDKs working. Every timestamp carries a UTC offset (`isoDate`,
+  never a zone-less `SimpleDateFormat` pattern): the boundary is found by *comparing*
+  `previousReportAt` with entry timestamps, so a missing offset slides the fold by hours.
+  `sequence` / `sessionOrdinal` / `previousReportAt` survive a kill; `processStartedAt` resets
+  with the process. `BACKGROUND_SESSION_THRESHOLD_MILLIS` **must equal the iOS SDK's**
+  `backgroundSessionThreshold`, or one scenario folds differently on the two platforms.
 - **No PII in telemetry.** No IP, SSID or location, ever.
 - **`FLAG_SECURE` is honoured.** `PixelCopy` is not attempted on a secure window; the fallback
   draws the view hierarchy. Do not add a path around this.

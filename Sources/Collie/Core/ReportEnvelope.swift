@@ -7,7 +7,9 @@ import Foundation
 /// {
 ///   "app":       { "bundleId": …, "version": …, "build": …, "environment": … },
 ///   "device":    { "id": …, "name": …, "model": …, "osVersion": …, "locale": …, "screen": … },
-///   "report":    { "whatHappened": …, "capturedAt": …, "sessionId": … },
+///   "report":    { "whatHappened": …, "capturedAt": …, "sessionId": …, "platform": "ios",
+///                  "previousReportAt": …, "sessionStartedAt": …, "processStartedAt": …,
+///                  "sessionOrdinal": …, "sequence": … },
 ///   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
 ///   "telemetry": { /* point-in-time device state, no PII */ }
 /// }
@@ -15,6 +17,11 @@ import Foundation
 ///
 /// Which app a report belongs to is resolved **server-side from the api-key**, so no app
 /// key or slug is sent here.
+///
+/// The session fields are **optional presentation metadata** (see `CollieSessionTracker`):
+/// the panel uses them to fold a report's repeated history into a collapsed block. A report
+/// without them renders exactly as it did before they existed, which is what keeps older
+/// SDK versions working — they must never become required.
 ///
 /// `entries` go out exactly as the host provided them: every category is preserved and
 /// nothing is summarized or truncated. The backend keeps the raw stream and derives its
@@ -30,8 +37,31 @@ enum ReportEnvelopeBuilder {
         let telemetry: CollieTelemetry?
         let sessionID: String
         let capturedAt: Date
-        let collieInitializedAt: Date
         let entries: [CollieLogEntry]
+        /// Session context — everything the panel needs to fold the repeated history.
+        /// `nil` only where a value genuinely does not exist yet (the first report has no
+        /// `previousReportAt`).
+        let session: CollieSessionTracker.ReportStamp?
+
+        init(
+            whatHappened: String,
+            testerName: String?,
+            identity: CollieDeviceIdentity,
+            telemetry: CollieTelemetry?,
+            sessionID: String,
+            capturedAt: Date,
+            entries: [CollieLogEntry],
+            session: CollieSessionTracker.ReportStamp? = nil
+        ) {
+            self.whatHappened = whatHappened
+            self.testerName = testerName
+            self.identity = identity
+            self.telemetry = telemetry
+            self.sessionID = sessionID
+            self.capturedAt = capturedAt
+            self.entries = entries
+            self.session = session
+        }
     }
 
     // MARK: - Wire format
@@ -63,6 +93,19 @@ enum ReportEnvelopeBuilder {
             let whatHappened: String
             let capturedAt: Date
             let sessionId: String?
+            /// Which SDK filed the report. Without it the panel has to guess the platform
+            /// from the bundle id, which fails whenever the id does not spell it out.
+            let platform: String
+            let previousReportAt: Date?
+            let sessionStartedAt: Date?
+            let processStartedAt: Date?
+            let sessionOrdinal: Int?
+            let sequence: Int?
+
+            /// This SDK is the iOS one wherever it is built; the macOS test build files
+            /// the same document, so the value is a constant rather than a compile-time
+            /// platform check.
+            static let platform = "ios"
         }
     }
 
@@ -70,8 +113,13 @@ enum ReportEnvelopeBuilder {
 
     /// Encodes the `report` JSON part.
     ///
-    /// Dates (entry `date`, `capturedAt`) are ISO-8601 — the format the backend parser
-    /// reads. Slashes are left unescaped so URLs stay readable in the stored payload.
+    /// Dates (entry `date`, `capturedAt`, the session timestamps) are ISO-8601 **with an
+    /// offset** — `.iso8601` renders UTC with a trailing `Z`. That offset is not cosmetic:
+    /// the panel finds the fold boundary by comparing `previousReportAt` against the entry
+    /// timestamps, and a stamp without one is read in the *browser's* timezone. Send one
+    /// side with an offset and the other without and the boundary slides by hours, cutting
+    /// the report in the wrong place. Slashes are left unescaped so URLs stay readable in
+    /// the stored payload.
     static func makeBody(
         configuration: CollieConfiguration,
         context: ReportContext
@@ -94,7 +142,13 @@ enum ReportEnvelopeBuilder {
             report: Envelope.Body(
                 whatHappened: context.whatHappened,
                 capturedAt: context.capturedAt,
-                sessionId: context.sessionID.isEmpty ? nil : context.sessionID
+                sessionId: context.sessionID.isEmpty ? nil : context.sessionID,
+                platform: Envelope.Body.platform,
+                previousReportAt: context.session?.previousReportAt,
+                sessionStartedAt: context.session?.sessionStartedAt,
+                processStartedAt: context.session?.processStartedAt,
+                sessionOrdinal: context.session?.sessionOrdinal,
+                sequence: context.session?.sequence
             ),
             entries: context.entries,
             telemetry: context.telemetry

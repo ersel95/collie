@@ -46,6 +46,11 @@ dependencies {
     // Persistent retry after the host process exits. The worker is only packaged in the real
     // debug artifact; release builds link `collie-no-op` and carry no background work.
     implementation(libs.androidx.work.runtime)
+    // Whole-process foreground/background transitions: a long background ends one logical
+    // session and opens the next, which is what lets the panel fold a report's repeated
+    // history (`CollieSessionTracker`). Per-activity callbacks would count a rotation as a
+    // trip to the background.
+    implementation(libs.androidx.lifecycle.process)
 
     implementation(platform(libs.compose.bom))
     implementation(libs.compose.ui)

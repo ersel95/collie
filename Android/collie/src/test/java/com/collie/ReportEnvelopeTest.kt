@@ -1,5 +1,6 @@
 package com.collie
 
+import com.collie.internal.CollieSessionTracker
 import com.collie.internal.ReportEnvelopeBuilder
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
@@ -33,12 +34,24 @@ class ReportEnvelopeTest {
         environment = "uat",
     )
 
+    private fun stamp(
+        previousReportAtMillis: Long? = 1_769_615_662_000, // 2026-01-28T15:54:22Z
+    ) = CollieSessionTracker.ReportStamp(
+        processStartedAtMillis = 1_769_607_603_000, // 2026-01-28T13:40:03Z
+        sessionStartedAtMillis = 1_769_612_530_000, // 2026-01-28T15:02:10Z
+        sessionOrdinal = 7,
+        previousReportAtMillis = previousReportAtMillis,
+        sequence = 3,
+        resumes = emptyList(),
+    )
+
     private fun envelope(
         whatHappened: String = "The list stayed empty",
         testerName: String? = null,
         sessionId: String = "session-9",
         entries: List<CollieLogEntry> = emptyList(),
         telemetry: CollieTelemetry? = null,
+        session: CollieSessionTracker.ReportStamp? = null,
     ): JSONObject {
         val body = ReportEnvelopeBuilder.makeBody(
             configuration = configuration,
@@ -49,8 +62,8 @@ class ReportEnvelopeTest {
                 telemetry = telemetry,
                 sessionId = sessionId,
                 capturedAtMillis = 1_769_616_610_000, // 2026-01-28T16:10:10Z
-                collieInitializedAtMillis = 1_769_616_600_000,
                 entries = entries,
+                session = session,
             ),
         )
         return JSONObject(String(body, Charsets.UTF_8))
@@ -100,6 +113,52 @@ class ReportEnvelopeTest {
     fun `captured at is iso 8601`() {
         val capturedAt = envelope().getJSONObject("report").getString("capturedAt")
         assertEquals("2026-01-28T16:10:10Z", capturedAt)
+    }
+
+    // MARK: - Session context (the panel's fold boundary)
+
+    @Test
+    fun `the session context is encoded`() {
+        val report = envelope(session = stamp()).getJSONObject("report")
+        assertEquals("android", report.getString("platform"))
+        assertEquals("2026-01-28T15:54:22Z", report.getString("previousReportAt"))
+        assertEquals("2026-01-28T15:02:10Z", report.getString("sessionStartedAt"))
+        assertEquals("2026-01-28T13:40:03Z", report.getString("processStartedAt"))
+        assertEquals(7, report.getInt("sessionOrdinal"))
+        assertEquals(3, report.getInt("sequence"))
+    }
+
+    @Test
+    fun `session timestamps carry an offset`() {
+        // The boundary is found by *comparing* `previousReportAt` with the entry timestamps,
+        // so every one of them has to carry an offset. A bare `2026-01-28T15:54:22` would be
+        // read in the browser's timezone and slide the fold by hours — which is what a
+        // `SimpleDateFormat` pattern without the zone produces.
+        val report = envelope(session = stamp()).getJSONObject("report")
+        listOf("capturedAt", "previousReportAt", "sessionStartedAt", "processStartedAt").forEach { key ->
+            assertTrue("$key has no UTC offset", report.getString(key).endsWith("Z"))
+        }
+    }
+
+    @Test
+    fun `previous report at is omitted on the first report`() {
+        val report = envelope(session = stamp(previousReportAtMillis = null)).getJSONObject("report")
+        assertFalse(report.has("previousReportAt"))
+        assertTrue(report.has("sessionStartedAt"))
+    }
+
+    @Test
+    fun `the session context is omitted when absent`() {
+        // The panel renders a report without these fields exactly as it did before they
+        // existed, which is what keeps older SDK versions working. They stay optional.
+        val report = envelope(session = null).getJSONObject("report")
+        listOf(
+            "previousReportAt",
+            "sessionStartedAt",
+            "processStartedAt",
+            "sessionOrdinal",
+            "sequence",
+        ).forEach { key -> assertFalse("$key should be omitted", report.has(key)) }
     }
 
     @Test

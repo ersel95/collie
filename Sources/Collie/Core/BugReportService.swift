@@ -17,21 +17,33 @@ public final class BugReportService: @unchecked Sendable {
     private var remoteCaptureEnabled = true
     private var remoteMaxScreenshotBytes: Int?
 
-    /// When Collie was configured — written into every report as a synthetic
-    /// "Session started" log entry.
-    let initializedAt = Date()
+    /// Logical sessions, the persistent report counters, and the session markers that go
+    /// into `entries`. See `CollieSessionTracker`.
+    let sessions: CollieSessionTracker
 
-    init(configuration: CollieConfiguration, transport: (any ReportTransport)? = nil) {
+    /// When Collie was configured — written into every report as a synthetic
+    /// "Session started" log entry, and as the envelope's `processStartedAt`.
+    var initializedAt: Date { sessions.processStartedAt }
+
+    init(
+        configuration: CollieConfiguration,
+        transport: (any ReportTransport)? = nil,
+        sessions: CollieSessionTracker = CollieSessionTracker()
+    ) {
         self.configuration = configuration
         let effectiveTransport = transport ?? IngestionClient(configuration: configuration)
         self.transport = effectiveTransport
         self.queue = UploadQueue(configuration: configuration, transport: effectiveTransport)
+        self.sessions = sessions
     }
 
     // MARK: - Lifecycle (called from configure)
 
-    /// Fetches the server-side kill switch and drains the pending queue (once at startup).
+    /// Fetches the server-side kill switch and drains the pending queue (once at startup),
+    /// and starts watching the background/foreground transitions that end one logical
+    /// session and open the next.
     func bootstrap() {
+        sessions.startObservingLifecycle()
         Task {
             await refreshRemoteConfig()
             await queue.drain()
@@ -121,18 +133,22 @@ public final class BugReportService: @unchecked Sendable {
         }
         let effectiveName = testerName ?? identity.name ?? CollieDeviceIdentity.storedName()
 
-        // The host's log snapshot — ALL categories, raw entries — plus Collie's own
-        // init marker, inserted at its chronological position so the timeline shows
-        // when Collie started.
-        var entries = configuration.logSnapshotProvider?() ?? []
-        let initEntry = CollieLogEntry(
-            date: initializedAt,
-            level: "info",
-            category: "collie",
-            message: "Session started — \(ReportEnvelopeBuilder.dateTimeString(initializedAt))"
+        // Whole seconds: `capturedAt` is stored as the next report's `previousReportAt`,
+        // and both are encoded by a formatter that drops the fraction. Rounding down here
+        // means the two strings are identical rather than a fraction of a second apart —
+        // the panel compares them for equality to place the fold boundary.
+        let capturedAt = Date(timeIntervalSince1970: Date().timeIntervalSince1970.rounded(.down))
+        let stamp = sessions.stampForReport(capturedAt: capturedAt)
+
+        // The host's log snapshot — ALL categories, raw entries, nothing dropped — plus
+        // Collie's own session markers, merged in at their chronological positions so the
+        // timeline shows where this session began, where it resumed after a long
+        // background, and where the previous report was filed.
+        let hostEntries = configuration.logSnapshotProvider?() ?? []
+        let entries = CollieSessionTracker.merge(
+            hostEntries: hostEntries,
+            markers: CollieSessionTracker.markerEntries(for: stamp)
         )
-        let insertIndex = entries.firstIndex { $0.date > initializedAt } ?? entries.endIndex
-        entries.insert(initEntry, at: insertIndex)
         let sessionID = configuration.sessionIDProvider?() ?? ""
 
         let context = ReportEnvelopeBuilder.ReportContext(
@@ -141,9 +157,9 @@ public final class BugReportService: @unchecked Sendable {
             identity: identity,
             telemetry: telemetry,
             sessionID: sessionID,
-            capturedAt: Date(),
-            collieInitializedAt: initializedAt,
-            entries: entries
+            capturedAt: capturedAt,
+            entries: entries,
+            session: stamp
         )
 
         guard let reportBody = try? ReportEnvelopeBuilder.makeBody(

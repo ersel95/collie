@@ -115,11 +115,24 @@ validation).
     implementation (it must compose with other tools that swizzle the same selector).
   - ALL provided log entries are uploaded in full, with their categories preserved and
     nothing summarized or truncated — the panel derives its network/navigation views
-    from that raw stream, so it must stay lossless.
+    from that raw stream, so it must stay lossless. Collie adds its own `category: "collie"`
+    markers at their chronological positions and changes nothing else.
   - The upload envelope is the backend's ingestion contract
     (`ReportEnvelopeBuilder`): `app` / `device` / `report` / `entries` / `telemetry`,
     ISO-8601 dates, and **no app key** (the backend resolves the app from the api-key).
     `ReportEnvelopeTests` locks the shape in.
+  - Session context (`CollieSessionTracker`) — the fields the panel folds a report's
+    repeated history with, because testers never kill the app and the tenth report
+    otherwise repeats the first nine. Three rules hold it together:
+    - `report.previousReportAt` / `sessionStartedAt` / `processStartedAt` / `sessionOrdinal`
+      / `sequence` are **optional** and stay that way; a report without them must render
+      exactly as it did before they existed, which is what keeps older SDKs working.
+    - Every timestamp carries a UTC offset. The boundary is found by *comparing*
+      `previousReportAt` with entry timestamps, so a stamp without one is read in the
+      browser's timezone and slides the fold by hours.
+    - `sequence` / `sessionOrdinal` / `previousReportAt` are persistent (`UserDefaults`) and
+      survive a kill; `processStartedAt` is the one field that resets with the process. The
+      background threshold that ends a logical session **must equal Android's**.
   - Core stays log-source agnostic: no logging-library types or names in `Sources/`
     (concrete bridges live only in docs and the integration template).
   - No PII (IP/SSID/location) is ever added to telemetry.

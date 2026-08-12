@@ -20,7 +20,9 @@ import java.util.TimeZone
  * {
  *   "app":       { "bundleId": …, "version": …, "build": …, "environment": … },
  *   "device":    { "id": …, "name": …, "model": …, "osVersion": …, "locale": …, "screen": … },
- *   "report":    { "whatHappened": …, "capturedAt": …, "sessionId": … },
+ *   "report":    { "whatHappened": …, "capturedAt": …, "sessionId": …, "platform": "android",
+ *                  "previousReportAt": …, "sessionStartedAt": …, "processStartedAt": …,
+ *                  "sessionOrdinal": …, "sequence": … },
  *   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
  *   "telemetry": { /* point-in-time device state, no PII */ }
  * }
@@ -28,6 +30,11 @@ import java.util.TimeZone
  *
  * Which app a report belongs to is resolved **server-side from the api-key** (or from the
  * app key the Firestore transport writes), so no app key or slug is sent here.
+ *
+ * The session fields are **optional presentation metadata** (see [CollieSessionTracker]): the
+ * panel uses them to fold a report's repeated history into a collapsed block. A report
+ * without them renders exactly as it did before they existed, which is what keeps older SDK
+ * versions working — they must never become required.
  *
  * `entries` go out exactly as the host provided them: every category is preserved and
  * nothing is summarized or truncated. The backend keeps the raw stream and derives its
@@ -48,15 +55,26 @@ internal object ReportEnvelopeBuilder {
         val telemetry: CollieTelemetry?,
         val sessionId: String,
         val capturedAtMillis: Long,
-        val collieInitializedAtMillis: Long,
         val entries: List<CollieLogEntry>,
+        /**
+         * Session context — everything the panel needs to fold the repeated history. `null`
+         * only where a value genuinely does not exist yet (the first report from a device
+         * has no `previousReportAt`).
+         */
+        val session: CollieSessionTracker.ReportStamp? = null,
     )
 
     /**
      * Encodes the `report` JSON part.
      *
-     * Dates (entry timestamps, `capturedAt`) are ISO-8601 in UTC — the format the backend
-     * parser reads, and the same one `JSONEncoder.DateEncodingStrategy.iso8601` produces.
+     * Dates (entry timestamps, `capturedAt`, the session timestamps) are ISO-8601 in UTC —
+     * the format the backend parser reads, and the same one
+     * `JSONEncoder.DateEncodingStrategy.iso8601` produces. The trailing `Z` is not cosmetic:
+     * the panel finds the fold boundary by comparing `previousReportAt` against the entry
+     * timestamps, and a stamp without an offset is read in the *browser's* timezone. Send one
+     * side with an offset and the other without and the boundary slides by hours, cutting the
+     * report in the wrong place. This is why [isoDate] is the only path to a timestamp here —
+     * a `SimpleDateFormat` pattern without the zone is exactly how that bug gets in.
      */
     internal fun makeBody(
         configuration: CollieConfiguration,
@@ -80,6 +98,14 @@ internal object ReportEnvelopeBuilder {
             .put("whatHappened", context.whatHappened)
             .put("capturedAt", isoDate(context.capturedAtMillis))
             .putIfPresent("sessionId", context.sessionId.ifBlank { null })
+            // Which SDK filed the report. Without it the panel has to guess the platform
+            // from the package name, which fails whenever the name does not spell it out.
+            .put("platform", PLATFORM)
+            .putIfPresent("previousReportAt", context.session?.previousReportAtMillis?.let(::isoDate))
+            .putIfPresent("sessionStartedAt", context.session?.sessionStartedAtMillis?.let(::isoDate))
+            .putIfPresent("processStartedAt", context.session?.processStartedAtMillis?.let(::isoDate))
+            .putIfPresent("sessionOrdinal", context.session?.sessionOrdinal)
+            .putIfPresent("sequence", context.session?.sequence)
 
         val entries = JSONArray()
         context.entries.forEach { entries.put(it.toJson()) }
@@ -125,6 +151,9 @@ internal object ReportEnvelopeBuilder {
         if (value == null) this else put(key, value)
 
     // MARK: - Formatting helpers
+
+    /** The platform the panel would otherwise have to infer from the package name. */
+    private const val PLATFORM = "android"
 
     /** ISO-8601 in UTC, seconds precision: `2026-07-28T16:10:10Z`. */
     internal fun isoDate(epochMillis: Long): String = isoFormatter().format(Date(epochMillis))

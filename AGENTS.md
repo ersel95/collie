@@ -141,10 +141,18 @@ validation).
     part, `x-collie-api-key` header) and `GET <configPath>`; both overridable via
     `CollieConfiguration`.
   - Firebase — `collie_reports/<reportId>` (envelope decoded, plus `appKey`, `status`,
-    `hasScreenshot`), the screenshot base64 in `collie_report_screenshots/<reportId>`
-    (Cloud Storage needs a paid plan, so it is NOT used), and the kill switch in
-    `collie_config/<appKey>`. Collections are overridable via
-    `FirestoreTransport.Configuration`. Rule templates: `Integration/firestore.rules`.
+    `hasScreenshot`), the raw log stream in `collie_report_entries/<reportId>`, the
+    screenshot base64 in `collie_report_screenshots/<reportId>` (Cloud Storage needs a paid
+    plan, so it is NOT used), and the kill switch in `collie_config/<appKey>`. Collections
+    are overridable via `FirestoreTransport.Configuration`. Rule templates:
+    `Integration/firestore.rules`. Moving an existing writer onto the split shape:
+    [`MIGRATION.md`](MIGRATION.md).
+  - **The report document carries no `entries`.** The stream is written to its own document
+    first, and only falls back to inline if that write fails *permanently* (rules that
+    predate the collection). The panel reads both shapes, so this is not a flag day — but
+    a change that puts the stream back inside the report document undoes the reason the
+    panel's list is fast, and must not be made casually. Why, and what the panel expects:
+    [`MIGRATION.md`](MIGRATION.md).
 - Language: all code comments, docs, and commit messages are in English.
 - Releasing: add a `## <version> — <date>` section to `CHANGELOG.md`, commit, then
   `git tag <version> && git push origin <version>` (plain semver, no `v` prefix).

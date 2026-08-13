@@ -58,6 +58,12 @@ changes:
 - **Lossless entries.** Every category the host provides is uploaded, unsummarised — the panel
   derives its network and navigation views from that raw stream. Collie adds its own
   `category = "collie"` markers at their chronological positions and changes nothing else.
+- **The stream is its own Firestore document.** `entries` goes to
+  `collie_report_entries/<reportId>`, never inside the report document — the panel lists reports
+  by four fields and Firestore's web SDK cannot fetch a subset of a document, so a stream left
+  inside is downloaded on every list load. Written *before* the report, falling back to inline
+  only on a permanent failure (rules that predate the collection). Putting it back inside undoes
+  the reason the panel's list is fast: [`../MIGRATION.md`](../MIGRATION.md).
 - **Session context** (`CollieSessionTracker`). The fields the panel folds a report's repeated
   history with, because testers never kill the app and the tenth report otherwise repeats the
   first nine. `report.previousReportAt` / `sessionStartedAt` / `processStartedAt` /

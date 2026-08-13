@@ -3,6 +3,29 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.4.0 — 2026-08-13
+
+### Changed
+- **The log stream is written to its own document, not inside the report** — the Android half
+  of iOS 1.15.0, field for field. The panel's list screen shows four fields per report, but
+  Firestore's web SDK cannot fetch a subset of a document's fields, so every list load
+  downloaded each report's complete `entries` array. Since testers never close the app and
+  each report repeats the previous ones' stream, those documents kept growing and the list
+  got slower every week.
+
+  `entries` now goes to `collie_report_entries/<reportId>` — `{ appKey, entries, createdAt }`,
+  same document id as the report, the same pattern screenshots have used all along. Write
+  order is screenshot → entries → report. A permanent failure on the entries write falls back
+  to the old inline shape rather than losing the logs; a transient one retries the whole
+  report. The panel reads both shapes, so nothing needs backfilling.
+
+  `FirestoreTransport.Configuration` gains `entriesCollection` (default
+  `"collie_report_entries"`), mirrored in the no-op artifact so the host's single integration
+  file still compiles in release builds.
+
+  ⚠️ **Deploy `Integration/firestore.rules` before shipping this** — see the iOS changelog
+  entry and [`../MIGRATION.md`](../MIGRATION.md).
+
 ## 0.3.0 — 2026-08-12
 
 ### Added

@@ -33,16 +33,28 @@ import kotlin.coroutines.resumeWithException
  * after a lost response writes to the same document instead of creating a second report —
  * the same guarantee the HTTPS transport gets from its idempotency header.
  *
+ * **The log stream goes to its own document, like the screenshot.** For the same reason: the
+ * panel's list screen shows a status, a sentence, a device and a date, and Firestore's web
+ * SDK cannot fetch a subset of a document's fields — asking for the report meant downloading
+ * every log line and response body it carried. Testers do not close the app, so each report
+ * also carries the previous ones' stream and the documents keep growing: the list got slower
+ * with every report filed. `entries` therefore lands in `<entriesCollection>/<reportId>` and
+ * the report document stays small.
+ *
  * **What is written** (`<collection>/<reportId>`):
- * - `app`, `device`, `report`, `entries`, `telemetry` — the envelope, decoded from JSON so
- *   the data is queryable in Firestore rather than an opaque blob.
+ * - `app`, `device`, `report`, `telemetry` — the envelope minus its stream, decoded from JSON
+ *   so the data is queryable in Firestore rather than an opaque blob.
  * - `hasScreenshot` — whether `<screenshotCollection>/<reportId>` holds the image.
  * - `status` — always `"new"`; the panel owns the lifecycle afterwards.
  * - `createdAt` — server timestamp.
  *
- * The `entries` array is written **losslessly**: every category the host logged is kept,
- * exactly as the envelope builder produced it — and in the same shape the iOS SDK writes, so
- * one panel reads both platforms.
+ * **What is written** (`<entriesCollection>/<reportId>`): `appKey`, `entries`, `createdAt`.
+ * `appKey` is repeated there so the security rules can scope the collection without reading
+ * the parent document.
+ *
+ * The `entries` array is written **losslessly** wherever it lands: every category the host
+ * logged is kept, exactly as the envelope builder produced it — and in the same shape the iOS
+ * SDK writes, so one panel reads both platforms.
  */
 public class FirestoreTransport @JvmOverloads constructor(
     private val configuration: Configuration,
@@ -60,6 +72,12 @@ public class FirestoreTransport @JvmOverloads constructor(
          * report. Kept separate so listing reports never pulls image data along.
          */
         public val screenshotCollection: String = "collie_report_screenshots",
+        /**
+         * Firestore collection that receives the raw log stream, one document per report.
+         * Separate for the same reason as the screenshot: the panel lists reports without
+         * it, and it is the part that grows without bound.
+         */
+        public val entriesCollection: String = "collie_report_entries",
         /**
          * Firestore document holding the remote kill switch
          * (`<configCollection>/<appKey>` with a boolean `captureEnabled`).
@@ -126,13 +144,38 @@ public class FirestoreTransport @JvmOverloads constructor(
             }
         }
 
+        // 2. The log stream, into its own document — the whole point of the split. Written
+        //    BEFORE the report for the same reason the screenshot is: the report document is
+        //    what the panel discovers, and it must never point at a stream that is not there
+        //    yet.
+        //
+        //    A permanent failure falls back to the old shape rather than dropping the logs.
+        //    Rules that predate this collection reject the write permanently, and a report
+        //    whose stream was silently discarded is worse than a large document: the stream is
+        //    what the analyst reads to reconstruct the bug. Size is not a concern in that path
+        //    — the envelope was already checked against `maxDocumentBytes` above, with the
+        //    entries inside it.
+        val entries = document.remove("entries")
+        if (entries != null) {
+            when (val result = putEntries(entries, reportId)) {
+                // The write below merges, so an `entries` field left by an EARLIER attempt
+                // would survive it: a report queued by a build that wrote the stream inline
+                // and retried after the app updated. Deleting the field keeps the report
+                // document small in that case too, and the stream is already safely written.
+                is CollieOperationResult.Success -> document["entries"] = FieldValue.delete()
+                is CollieOperationResult.PermanentFailure -> document["entries"] = entries
+                is CollieOperationResult.TransientFailure ->
+                    return CollieOperationResult.TransientFailure(result.reason)
+            }
+        }
+
         document["appKey"] = configuration.appKey
         document["hasScreenshot"] = hasScreenshot
         document["status"] = "new"
         document["clientReportId"] = reportId
         document["createdAt"] = FieldValue.serverTimestamp()
 
-        // 2. The report id IS the document id → a retry overwrites the same document rather
+        // 3. The report id IS the document id → a retry overwrites the same document rather
         //    than adding another one.
         return try {
             firestore.collection(configuration.collection)
@@ -192,6 +235,36 @@ public class FirestoreTransport @JvmOverloads constructor(
         CollieOperationResult.Success(Unit)
     } catch (error: Exception) {
         classify(error, action = "write the screenshot")
+    }
+
+    // MARK: - Log stream
+
+    /**
+     * Writes the raw log stream into its own document, keyed by the report id so a retry
+     * overwrites rather than duplicates — the same idempotency the report document gets.
+     *
+     * `appKey` travels with it because the security rules scope this collection on its own; a
+     * rule that had to read the parent report would both cost a read per write and fail on the
+     * very first write, when the parent does not exist yet.
+     */
+    private suspend fun putEntries(
+        entries: Any,
+        reportId: String,
+    ): CollieOperationResult<Unit> = try {
+        firestore.collection(configuration.entriesCollection)
+            .document(reportId)
+            .set(
+                mapOf(
+                    "appKey" to configuration.appKey,
+                    "entries" to entries,
+                    "createdAt" to FieldValue.serverTimestamp(),
+                ),
+                SetOptions.merge(),
+            )
+            .await()
+        CollieOperationResult.Success(Unit)
+    } catch (error: Exception) {
+        classify(error, action = "write the log entries")
     }
 
     // MARK: - Error classification

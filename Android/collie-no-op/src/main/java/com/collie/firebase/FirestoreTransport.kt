@@ -25,6 +25,10 @@ public class FirestoreTransport @JvmOverloads constructor(
         public val appKey: String,
         public val collection: String = "collie_reports",
         public val screenshotCollection: String = "collie_report_screenshots",
+        // Mirrors the real Configuration parameter for parameter, in the same order: the
+        // host builds this in ONE file shared by debug and release, so a name or position
+        // that exists in only one of them breaks the release build.
+        public val entriesCollection: String = "collie_report_entries",
         public val configCollection: String = "collie_config",
         public val maxDocumentBytes: Int = 900_000,
         public val maxScreenshotBytes: Int = 650_000,

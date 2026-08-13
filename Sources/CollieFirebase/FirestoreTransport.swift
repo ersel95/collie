@@ -20,15 +20,27 @@ import FirebaseFirestore
 /// retry after a lost response writes to the same document instead of creating a second
 /// report — the same guarantee the HTTPS transport gets from its idempotency header.
 ///
+/// **The log stream goes to its own document, like the screenshot.** For the same reason:
+/// the panel's list screen shows a status, a sentence, a device and a date, and Firestore's
+/// web SDK cannot fetch a subset of a document's fields — asking for the report meant
+/// downloading every log line and response body it carried. Testers do not close the app,
+/// so each report also carries the previous ones' stream and the documents keep growing:
+/// the list got slower with every report filed. `entries` therefore lands in
+/// `<entriesCollection>/<reportID>` and the report document stays small.
+///
 /// **What is written** (`<collection>/<reportID>`):
-/// - `app`, `device`, `report`, `entries`, `telemetry` — the envelope, decoded from JSON
-///   so the data is queryable in Firestore rather than an opaque blob.
+/// - `app`, `device`, `report`, `telemetry` — the envelope minus its stream, decoded from
+///   JSON so the data is queryable in Firestore rather than an opaque blob.
 /// - `hasScreenshot` — whether `<screenshotCollection>/<reportID>` holds the image.
 /// - `status` — always `"new"`; the panel owns the lifecycle afterwards.
 /// - `createdAt` — server timestamp.
 ///
-/// The `entries` array is written **losslessly**: every category the host logged is kept,
-/// exactly as `ReportEnvelopeBuilder` produced it.
+/// **What is written** (`<entriesCollection>/<reportID>`): `appKey`, `entries`, `createdAt`.
+/// `appKey` is repeated there so the security rules can scope the collection without
+/// reading the parent document.
+///
+/// The `entries` array is written **losslessly** wherever it lands: every category the host
+/// logged is kept, exactly as `ReportEnvelopeBuilder` produced it.
 public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
 
     /// Where reports and screenshots are written.
@@ -38,6 +50,10 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         /// Firestore collection that receives the base64 screenshots, one document per
         /// report. Kept separate so listing reports never pulls image data along.
         public var screenshotCollection: String
+        /// Firestore collection that receives the raw log stream, one document per report.
+        /// Separate for the same reason as the screenshot: the panel lists reports without
+        /// it, and it is the part that grows without bound.
+        public var entriesCollection: String
         /// Which app the report belongs to — the panel groups by this.
         public var appKey: String
         /// Firestore document holding the remote kill switch
@@ -56,6 +72,7 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             appKey: String,
             collection: String = "collie_reports",
             screenshotCollection: String = "collie_report_screenshots",
+            entriesCollection: String = "collie_report_entries",
             configCollection: String = "collie_config",
             maxDocumentBytes: Int = 900_000,
             maxScreenshotBytes: Int = 650_000
@@ -63,6 +80,7 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             self.appKey = appKey
             self.collection = collection
             self.screenshotCollection = screenshotCollection
+            self.entriesCollection = entriesCollection
             self.configCollection = configCollection
             self.maxDocumentBytes = maxDocumentBytes
             self.maxScreenshotBytes = maxScreenshotBytes
@@ -125,13 +143,39 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             }
         }
 
+        // 2. The log stream, into its own document — the whole point of the split. Written
+        //    BEFORE the report for the same reason the screenshot is: the report document
+        //    is what the panel discovers, and it must never point at a stream that is not
+        //    there yet.
+        //
+        //    A permanent failure falls back to the old shape rather than dropping the logs.
+        //    Rules that predate this collection reject the write permanently, and a report
+        //    whose stream was silently discarded is worse than a large document: the stream
+        //    is what the analyst reads to reconstruct the bug. Size is not a concern in that
+        //    path — the envelope was already checked against `maxDocumentBytes` above, with
+        //    the entries inside it.
+        if let entries = document.removeValue(forKey: "entries") {
+            switch await putEntries(entries, reportID: reportID) {
+            case .success:
+                // The write below merges, so an `entries` field left by an EARLIER attempt
+                // would survive it: a report queued by a build that wrote the stream inline
+                // and retried after the app updated. Deleting the field keeps the report
+                // document small in that case too, and the stream is already safely written.
+                document["entries"] = FieldValue.delete()
+            case .transientFailure(let reason):
+                return .transientFailure(reason)
+            case .permanentFailure:
+                document["entries"] = entries
+            }
+        }
+
         document["appKey"] = configuration.appKey
         document["hasScreenshot"] = hasScreenshot
         document["status"] = "new"
         document["clientReportId"] = reportID
         document["createdAt"] = FieldValue.serverTimestamp()
 
-        // 2. The report id IS the document id → a retry overwrites the same document
+        // 3. The report id IS the document id → a retry overwrites the same document
         //    rather than adding another one.
         do {
             try await firestore
@@ -187,6 +231,33 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             return .success(())
         } catch {
             return Self.classify(error, action: "write the screenshot")
+        }
+    }
+
+    // MARK: - Log stream
+
+    /// Writes the raw log stream into its own document, keyed by the report id so a retry
+    /// overwrites rather than duplicates — the same idempotency the report document gets.
+    ///
+    /// `appKey` travels with it because the security rules scope this collection on its own;
+    /// a rule that had to `get()` the parent report would both cost a read per write and
+    /// fail on the very first write, when the parent does not exist yet.
+    private func putEntries(
+        _ entries: Any,
+        reportID: String
+    ) async -> CollieOperationResult<Void> {
+        do {
+            try await firestore
+                .collection(configuration.entriesCollection)
+                .document(reportID)
+                .setData([
+                    "appKey": configuration.appKey,
+                    "entries": entries,
+                    "createdAt": FieldValue.serverTimestamp(),
+                ], merge: true)
+            return .success(())
+        } catch {
+            return Self.classify(error, action: "write the log entries")
         }
     }
 

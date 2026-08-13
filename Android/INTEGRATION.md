@@ -105,9 +105,22 @@ Collie.configure(
 )
 ```
 
-The report lands in `collie_reports/<reportId>` with its screenshot base64-encoded in
-`collie_report_screenshots/<reportId>` — Cloud Storage needs a paid plan, so it is deliberately
-not used. Rules template: [`../Integration/firestore.rules`](../Integration/firestore.rules).
+A report is three documents, all under the same report id:
+
+| Document | Holds |
+|---|---|
+| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `clientReportId`, `createdAt` |
+| `collie_report_entries/<reportId>` | `appKey`, `entries` (the full raw stream), `createdAt` |
+| `collie_report_screenshots/<reportId>` | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` |
+
+The stream and the screenshot stay out of the report document for the same reason: the panel
+lists reports by four fields, and Firestore's web SDK cannot fetch a subset of a document —
+anything left inside is downloaded on every list load. Cloud Storage would be the natural home
+for the image, but it needs a paid plan, so it is deliberately not used.
+
+Rules template: [`../Integration/firestore.rules`](../Integration/firestore.rules) — deploy it
+before shipping a build that writes the split shape. Writing to this Firestore without Collie:
+[`../MIGRATION.md`](../MIGRATION.md).
 
 A custom transport brings its own destination and credentials, so Collie skips the HTTPS field
 validation when one is passed.

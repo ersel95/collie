@@ -49,6 +49,25 @@ service cloud.firestore {
       }
     }
 
+    // ── Log stream ────────────────────────────────────────────────────────────
+    // The raw entries, in their own collection for the same reason as screenshots:
+    // the panel's list screen shows four fields per report, and Firestore's web SDK
+    // cannot fetch a subset of a document — so a stream left inside the report was
+    // downloaded in full, for every report, every time the list opened. Testers never
+    // close the app, so each report repeats the previous ones' stream and these grow
+    // without bound; that growth is what made the list slower every week.
+    //
+    // Same access shape as a report: the device writes it (once, plus retries), the
+    // analyst reads it and deletes it with the report. `appKey` is duplicated on the
+    // document so this rule never has to `get()` the parent — which would cost a read
+    // per write and fail on the first write, before the parent exists.
+    match /collie_report_entries/{reportId} {
+      allow create: if isWellFormedEntries();
+      allow update: if isWellFormedEntries()
+                    && request.resource.data.appKey == resource.data.appKey;
+      allow read, delete: if canSeeApp(resource.data.appKey);
+    }
+
     // ── Screenshots ───────────────────────────────────────────────────────────
     // Kept in their own collection so listing reports never drags base64 images
     // along. Storage is unavailable on the Spark plan, which is why these are here
@@ -183,6 +202,21 @@ function isWellFormedReport() {
       && request.resource.data.device.id is string
       && request.resource.data.device.id.size() <= 255
       && request.resource.data.status == 'new'
+      // `entries` is NO LONGER REQUIRED here. It moved to `collie_report_entries`, and
+      // requiring it would reject every report a current SDK writes. It is still bounded
+      // when a client sends it inline — older SDKs, and the fallback a newer one takes if
+      // writing the separate document is refused.
+      && (!('entries' in request.resource.data)
+          || (request.resource.data.entries is list
+              && request.resource.data.entries.size() <= 5000));
+}
+
+/// The split-out log stream. The size bound is the same one the report used to carry:
+/// this is an unauthenticated write, so the shape is the only limit there is.
+function isWellFormedEntries() {
+  return request.resource.data.appKey is string
+      && request.resource.data.appKey.size() > 0
+      && request.resource.data.appKey.size() <= 64
       && request.resource.data.entries is list
       && request.resource.data.entries.size() <= 5000;
 }

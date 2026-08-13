@@ -165,6 +165,25 @@ opens the report sheet directly (`false`).
   report's id as `x-collie-idempotency-key`; on the Firebase path that same id is the
   Firestore *document id*, so a retry overwrites the same document.
 
+### What a report looks like in Firestore
+
+Three documents, all keyed by the same report id:
+
+| Document | Holds |
+|---|---|
+| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `clientReportId`, `createdAt` |
+| `collie_report_entries/<reportId>` | `appKey`, `entries` (the full raw stream), `createdAt` |
+| `collie_report_screenshots/<reportId>` | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` |
+
+The stream and the screenshot are kept out of the report document for the same reason: the
+panel's list screen shows four fields per report, and Firestore's web SDK cannot fetch a
+subset of a document's fields. Anything left inside the report is therefore downloaded for
+every report on every list load — and since testers do not close the app, each report
+repeats the previous ones' stream, so those documents only grow.
+
+If you write to this Firestore **without** the Collie SDK, the same split applies to you:
+see [`MIGRATION.md`](MIGRATION.md).
+
 ### Screenshots on the Firebase path
 
 Cloud Storage requires a paid Firebase plan, so the JPEG is base64-encoded into its own

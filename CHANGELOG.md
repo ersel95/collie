@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.15.0 — 2026-08-13
+
+### Changed
+- **The log stream is written to its own document, not inside the report.** The panel's list
+  screen shows four fields per report, but Firestore's web SDK cannot fetch a subset of a
+  document's fields — so every list load downloaded each report's complete `entries` array,
+  request and response bodies included. Combined with testers never closing the app (each
+  report repeats the previous ones' stream), report documents kept growing and the list got
+  slower every week.
+
+  `entries` now goes to `collie_report_entries/<reportId>` — `{ appKey, entries, createdAt }`,
+  same document id as the report, the same pattern screenshots have used all along. The
+  report document keeps `app` / `device` / `report` / `telemetry` and no longer carries the
+  stream. Write order is screenshot → entries → report, so the report the panel discovers
+  never points at a stream that is not there yet.
+
+  **Nothing is dropped and nothing is a flag day.** The stream is still uploaded in full,
+  losslessly. A *permanent* failure writing the entries document (rules that predate the
+  collection) falls back to the old inline shape rather than losing the logs; a transient one
+  retries the whole report. The panel reads both shapes, so old reports and older SDKs keep
+  working untouched — no backfill.
+
+  ⚠️ **Deploy `Integration/firestore.rules` before shipping this.** It adds the
+  `collie_report_entries` block and stops *requiring* `entries` on the report document; with
+  the old rules live, a report without that field is rejected outright.
+
+  Writing to this Firestore without the SDK? [`MIGRATION.md`](MIGRATION.md) has the wire
+  shape, the ordering, and the one mistake that costs you a report's logs (`entries: []`
+  instead of an absent field).
+
 ## 1.14.0 — 2026-08-12
 
 ### Added

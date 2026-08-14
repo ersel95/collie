@@ -241,7 +241,10 @@ class ReportEnvelopeTest {
         assertFalse(encoded.has("appMemoryBytes"))
     }
 
-    private fun telemetry(accessibility: CollieAccessibilityState? = null) = CollieTelemetry(
+    private fun telemetry(
+        accessibility: CollieAccessibilityState? = null,
+        permissions: ColliePermissionState? = null,
+    ) = CollieTelemetry(
         timezone = "Europe/Istanbul",
         screenScale = 3.0,
         screenPoints = "412x915",
@@ -256,6 +259,7 @@ class ReportEnvelopeTest {
         totalMemoryBytes = null,
         appMemoryBytes = null,
         accessibility = accessibility,
+        permissions = permissions,
     )
 
     // MARK: - Accessibility (how the device presents the app)
@@ -292,6 +296,46 @@ class ReportEnvelopeTest {
         assertEquals("light", encoded.getString("interfaceStyle"))
         listOf("contentSize", "switchControl", "assistiveTouch", "reduceTransparency", "monoAudio")
             .forEach { key -> assertFalse("$key should be omitted", encoded.has(key)) }
+    }
+
+    // MARK: - Permissions (what the tester answered to the prompts)
+
+    @Test
+    fun `the permission state is encoded inside telemetry`() {
+        // The grants travel as their own nested block, under the keys
+        // `ReportEnvelopeTests.swift` asserts.
+        val permissions = ColliePermissionState(
+            camera = "granted",
+            microphone = "denied",
+            photoLibrary = "limited",
+            location = "whenInUse",
+            locationAccuracy = "reduced",
+            notifications = "denied",
+        )
+        val encoded = envelope(telemetry = telemetry(permissions = permissions))
+            .getJSONObject("telemetry").getJSONObject("permissions")
+        assertEquals("granted", encoded.getString("camera"))
+        assertEquals("denied", encoded.getString("microphone"))
+        assertEquals("limited", encoded.getString("photoLibrary"))
+        assertEquals("whenInUse", encoded.getString("location"))
+        assertEquals("reduced", encoded.getString("locationAccuracy"))
+        assertEquals("denied", encoded.getString("notifications"))
+    }
+
+    @Test
+    fun `a permission the host does not declare is omitted`() {
+        // "The app has no camera feature" and "the tester declined the camera" must not
+        // read the same in the panel.
+        val encoded = envelope(telemetry = telemetry(permissions = ColliePermissionState(camera = "granted")))
+            .getJSONObject("telemetry").getJSONObject("permissions")
+        assertEquals("granted", encoded.getString("camera"))
+        listOf("microphone", "photoLibrary", "location", "locationAccuracy", "notifications")
+            .forEach { key -> assertFalse("$key should be omitted", encoded.has(key)) }
+    }
+
+    @Test
+    fun `permissions are omitted when absent`() {
+        assertFalse(envelope(telemetry = telemetry()).getJSONObject("telemetry").has("permissions"))
     }
 
     @Test

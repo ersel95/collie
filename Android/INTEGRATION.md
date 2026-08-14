@@ -77,6 +77,14 @@ android {
   Apps — **not** a secret; write access is enforced by the Firestore rules), plus
   `google-services.json` and `FirebaseApp.initializeApp()` before Collie starts.
 
+### Permission statuses in the report — nothing to declare
+
+Each report carries what the tester answered to *your* permission prompts (camera, microphone,
+gallery, location, notifications), so a "the camera screen is black" report is not triaged blind.
+Collie only reads the statuses with `checkSelfPermission` and **declares none of these permissions
+in its manifest** — nothing is added to your merged manifest and no prompt can come from filing a
+report. A permission your app does not declare is reported as absent rather than "denied".
+
 ## 4. Starting it
 
 Copy [`Integration/CollieIntegration.kt`](Integration/CollieIntegration.kt) into the app and call

@@ -140,6 +140,15 @@ validation).
     vocabulary with Android's; a field the platform cannot read stays absent, so the panel
     can tell "off" from "not knowable here". It is optional the way the session fields
     are — a report without it renders as it always did.
+  - `telemetry.permissions` (camera / microphone / photo library / location / notifications)
+    is **status reads only**: `authorizationStatus`, never `requestAccess`. Collie must
+    never raise a permission prompt — a bug reporter that asks for the camera teaches
+    testers to decline, and a request without a usage description crashes the host. Reading
+    a grant is not reading the data behind it: no coordinate, no photo, no PII. The
+    notification grant is the one status with no synchronous API, so it is cached by
+    `CollieNotificationAuthorizationMonitor` (filled in `prepare()`, refreshed on
+    `didBecomeActive`) — `UNUserNotificationCenter.current()` also traps in a process
+    without an app bundle, which is what the macOS test run is, hence the UIKit guard.
 - Backend assumptions:
   - HTTPS — `POST <reportsPath>` (multipart: `report` JSON part + optional `screenshot`
     part, `x-collie-api-key` header) and `GET <configPath>`; both overridable via

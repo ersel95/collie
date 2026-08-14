@@ -87,6 +87,7 @@ public data class CollieTelemetry(
     public val totalMemoryBytes: Long?,
     public val appMemoryBytes: Long?,
     public val accessibility: CollieAccessibilityState? = null,
+    public val permissions: ColliePermissionState? = null,
 )
 
 /** Same shape as the real state; a release build never reads a single setting. */
@@ -110,6 +111,16 @@ public data class CollieAccessibilityState(
     public val monoAudio: Boolean? = null,
 )
 
+/** Same shape as the real state; a release build never reads a permission status. */
+public data class ColliePermissionState(
+    public val camera: String? = null,
+    public val microphone: String? = null,
+    public val photoLibrary: String? = null,
+    public val location: String? = null,
+    public val locationAccuracy: String? = null,
+    public val notifications: String? = null,
+)
+
 public object CollieTelemetryCollector {
     /** Everything unavailable — nothing about the device is read in a release build. */
     public fun capture(context: Context): CollieTelemetry = CollieTelemetry(
@@ -127,6 +138,7 @@ public object CollieTelemetryCollector {
         totalMemoryBytes = null,
         appMemoryBytes = null,
         accessibility = null,
+        permissions = null,
     )
 }
 

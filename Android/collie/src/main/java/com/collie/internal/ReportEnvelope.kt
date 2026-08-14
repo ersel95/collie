@@ -5,6 +5,7 @@ import com.collie.CollieConfiguration
 import com.collie.CollieDeviceIdentity
 import com.collie.CollieLogEntry
 import com.collie.CollieTelemetry
+import com.collie.ColliePermissionState
 import org.json.JSONArray
 import org.json.JSONObject
 import java.text.SimpleDateFormat
@@ -26,7 +27,8 @@ import java.util.TimeZone
  *                  "sessionOrdinal": …, "sequence": … },
  *   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
  *   "telemetry": { /* point-in-time device state, no PII — including the nested
- *                     "accessibility" block: dark mode, text size, TalkBack, … */ }
+ *                     "accessibility" (dark mode, text size, TalkBack, …) and
+ *                     "permissions" (camera/mic/gallery/location/notifications) blocks */ }
  * }
  * ```
  *
@@ -148,6 +150,7 @@ internal object ReportEnvelopeBuilder {
         .putIfPresent("totalMemoryBytes", totalMemoryBytes)
         .putIfPresent("appMemoryBytes", appMemoryBytes)
         .putIfPresent("accessibility", accessibility?.toJson())
+        .putIfPresent("permissions", permissions?.toJson())
 
     private fun CollieAccessibilityState.toJson(): JSONObject = JSONObject()
         .putIfPresent("interfaceStyle", interfaceStyle)
@@ -167,6 +170,14 @@ internal object ReportEnvelopeBuilder {
         .putIfPresent("onOffLabels", onOffLabels)
         .putIfPresent("closedCaptions", closedCaptions)
         .putIfPresent("monoAudio", monoAudio)
+
+    private fun ColliePermissionState.toJson(): JSONObject = JSONObject()
+        .putIfPresent("camera", camera)
+        .putIfPresent("microphone", microphone)
+        .putIfPresent("photoLibrary", photoLibrary)
+        .putIfPresent("location", location)
+        .putIfPresent("locationAccuracy", locationAccuracy)
+        .putIfPresent("notifications", notifications)
 
     /** `JSONObject.put(key, null)` stores a JSON null; absent fields must vanish instead. */
     private fun JSONObject.putIfPresent(key: String, value: Any?): JSONObject =

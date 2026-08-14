@@ -88,7 +88,13 @@ right person.
   mode, the text-size multiplier and Dynamic Type category, bold text, VoiceOver, reduce
   motion, increased contrast, inverted colours and the rest. A tester never mentions it,
   and it is usually why the layout looks broken on their screen and nowhere else.
-- **No PII** — telemetry is device-state only (no IP/SSID/location).
+- **Permission answers** — what the tester replied to the camera, microphone, photo
+  library, location and notification prompts. A declined prompt is the invisible cause
+  behind half the "this screen is broken" reports. Collie only *reads* the statuses: it
+  raises no prompt, needs no usage description, and a permission your app never uses is
+  reported as absent rather than denied.
+- **No PII** — telemetry is device-state only (no IP/SSID/location). A permission grant is
+  not the data behind it: whether location is allowed, never a coordinate.
 
 ## Installation
 

@@ -53,6 +53,19 @@ On the Firebase path the collections are configurable the same way — see
 `FirestoreTransport.Configuration` (`collection`, `screenshotCollection`,
 `configCollection`).
 
+### Permission statuses in the report — nothing to declare
+
+Each report carries what the tester answered to the host app's permission prompts (camera,
+microphone, photo library, location, notifications) so a "the camera screen is black" report
+is not triaged blind. Collie only *reads* these statuses — `authorizationStatus`, never
+`requestAccess` — so:
+
+- **No usage descriptions are needed.** Collie raises no prompt, and a missing
+  `NSCameraUsageDescription` cannot crash on a status read.
+- **No privacy-manifest change is needed** — a status read is not a required-reason API.
+- Linking the package pulls in `AVFoundation`, `Photos`, `CoreLocation` and
+  `UserNotifications`. A permission your app never uses is reported as absent, not "denied".
+
 ## 4. Startup
 
 Copy the `CollieIntegration.swift` template into your project and call it at app startup:

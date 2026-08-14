@@ -27,6 +27,30 @@
   `CollieTelemetry` gains a trailing `accessibility:` parameter with a `nil` default, so
   existing call sites keep compiling.
 
+- **And what the tester answered to the permission prompts.** A second nested block,
+  `telemetry.permissions`: `camera`, `microphone`, `photoLibrary` (`limited` for "Selected
+  Photos"), `location` (`always` / `whenInUse`) with `locationAccuracy` (`full` /
+  `reduced`), and `notifications` (`provisional` and `ephemeral` included).
+
+  A declined prompt is the invisible cause behind half the reports that read like a broken
+  feature: the camera screen that "opens black", the upload that "does nothing", the push
+  that "never arrives". The tester does not connect the two, and nobody triaging the report
+  could see it.
+
+  **Collie never asks for anything.** Every value is a status read — `authorizationStatus`,
+  never `requestAccess` — so no prompt is raised, no usage description is required, and no
+  privacy-manifest entry changes (a status read is not a required-reason API). Reading a
+  grant is not reading the data behind it: whether location is allowed, never a coordinate.
+
+  Two integration notes: linking the package now also links `AVFoundation`, `Photos`,
+  `CoreLocation` and `UserNotifications`; and a permission the host app never uses is
+  reported as *absent* rather than `denied`.
+
+  The notification grant is the one status with no synchronous API, so it is fetched in
+  `CollieTelemetryCollector.prepare()` and refreshed whenever the app becomes active —
+  which is exactly when it can have changed, since altering it means a trip to Settings and
+  back. Same optional, additive shape as the accessibility block.
+
 ## 1.15.0 — 2026-08-13
 
 ### Changed

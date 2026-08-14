@@ -119,7 +119,10 @@ The behaviours the iOS SDK guarantees are the same here, and the unit tests mirr
 - **Accessibility state** — every report carries how the device presents the app (dark mode, font
   scale, bold text, TalkBack, remove-animations, high-contrast text, colour inversion, captions),
   under the same `telemetry.accessibility` keys iOS sends.
-- **No PII in telemetry** — no IP, SSID or location, ever.
+- **Permission answers** — camera, microphone, gallery, location and notifications, as the tester
+  left them. Read with `checkSelfPermission` only: Collie declares none of these permissions in
+  its manifest and requests nothing, so filing a report can never raise a prompt.
+- **No PII in telemetry** — no IP, SSID or location, ever. A grant is not the data behind it.
 - **Markup replaces the image** — the editor only ever hands back a complete replacement, so
   marks a tester draws to hide something never travel separately from the pixels they cover.
 

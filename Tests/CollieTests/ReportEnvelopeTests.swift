@@ -261,7 +261,8 @@ final class ReportEnvelopeTests: XCTestCase {
     }
 
     private func makeTelemetry(
-        accessibility: CollieAccessibilityState? = nil
+        accessibility: CollieAccessibilityState? = nil,
+        permissions: ColliePermissionState? = nil
     ) -> CollieTelemetry {
         CollieTelemetry(
             timezone: "Europe/Istanbul", screenScale: 3, screenPoints: "393x852",
@@ -269,7 +270,8 @@ final class ReportEnvelopeTests: XCTestCase {
             lowPowerMode: false, thermalState: "nominal", orientation: "portrait",
             freeDiskBytes: 1024, totalDiskBytes: 2048,
             totalMemoryBytes: 4096, appMemoryBytes: 512,
-            accessibility: accessibility
+            accessibility: accessibility,
+            permissions: permissions
         )
     }
 
@@ -319,5 +321,47 @@ final class ReportEnvelopeTests: XCTestCase {
         let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
         XCTAssertNil(telemetry["accessibility"])
         XCTAssertEqual(telemetry["timezone"] as? String, "Europe/Istanbul")
+    }
+
+    // MARK: - Permissions (what the tester answered to the prompts)
+
+    /// The grants travel as their own nested block, under the keys the Android SDK sends.
+    func testPermissionStateIsEncodedInsideTelemetry() throws {
+        let permissions = ColliePermissionState(
+            camera: "granted",
+            microphone: "denied",
+            photoLibrary: "limited",
+            location: "whenInUse",
+            locationAccuracy: "reduced",
+            notifications: "denied"
+        )
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(permissions: permissions)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["permissions"] as? [String: Any])
+        XCTAssertEqual(encoded["camera"] as? String, "granted")
+        XCTAssertEqual(encoded["microphone"] as? String, "denied")
+        XCTAssertEqual(encoded["photoLibrary"] as? String, "limited")
+        XCTAssertEqual(encoded["location"] as? String, "whenInUse")
+        XCTAssertEqual(encoded["locationAccuracy"] as? String, "reduced")
+        XCTAssertEqual(encoded["notifications"] as? String, "denied")
+    }
+
+    /// A permission the host app never uses is absent — "the app has no camera feature"
+    /// and "the tester declined the camera" must not read the same in the panel.
+    func testUnusedPermissionsAreOmitted() throws {
+        let permissions = ColliePermissionState(camera: "granted")
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(permissions: permissions)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["permissions"] as? [String: Any])
+        XCTAssertEqual(encoded["camera"] as? String, "granted")
+        for key in ["microphone", "photoLibrary", "location", "locationAccuracy", "notifications"] {
+            XCTAssertNil(encoded[key], "\(key) should be omitted")
+        }
+    }
+
+    func testPermissionsAreOmittedWhenAbsent() throws {
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry()))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        XCTAssertNil(telemetry["permissions"])
     }
 }

@@ -1,5 +1,6 @@
 package com.collie.internal
 
+import com.collie.CollieAccessibilityState
 import com.collie.CollieConfiguration
 import com.collie.CollieDeviceIdentity
 import com.collie.CollieLogEntry
@@ -24,7 +25,8 @@ import java.util.TimeZone
  *                  "previousReportAt": …, "sessionStartedAt": …, "processStartedAt": …,
  *                  "sessionOrdinal": …, "sequence": … },
  *   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
- *   "telemetry": { /* point-in-time device state, no PII */ }
+ *   "telemetry": { /* point-in-time device state, no PII — including the nested
+ *                     "accessibility" block: dark mode, text size, TalkBack, … */ }
  * }
  * ```
  *
@@ -145,6 +147,26 @@ internal object ReportEnvelopeBuilder {
         .putIfPresent("totalDiskBytes", totalDiskBytes)
         .putIfPresent("totalMemoryBytes", totalMemoryBytes)
         .putIfPresent("appMemoryBytes", appMemoryBytes)
+        .putIfPresent("accessibility", accessibility?.toJson())
+
+    private fun CollieAccessibilityState.toJson(): JSONObject = JSONObject()
+        .putIfPresent("interfaceStyle", interfaceStyle)
+        .putIfPresent("fontScale", fontScale)
+        .putIfPresent("contentSize", contentSize)
+        .putIfPresent("boldText", boldText)
+        .putIfPresent("screenReader", screenReader)
+        .putIfPresent("switchControl", switchControl)
+        .putIfPresent("assistiveTouch", assistiveTouch)
+        .putIfPresent("speakScreen", speakScreen)
+        .putIfPresent("reduceMotion", reduceMotion)
+        .putIfPresent("reduceTransparency", reduceTransparency)
+        .putIfPresent("increaseContrast", increaseContrast)
+        .putIfPresent("invertColors", invertColors)
+        .putIfPresent("grayscale", grayscale)
+        .putIfPresent("differentiateWithoutColor", differentiateWithoutColor)
+        .putIfPresent("onOffLabels", onOffLabels)
+        .putIfPresent("closedCaptions", closedCaptions)
+        .putIfPresent("monoAudio", monoAudio)
 
     /** `JSONObject.put(key, null)` stores a JSON null; absent fields must vanish instead. */
     private fun JSONObject.putIfPresent(key: String, value: Any?): JSONObject =

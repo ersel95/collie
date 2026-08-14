@@ -84,6 +84,10 @@ right person.
   closes the Collie UI and hands off to another diagnostics tool of your choice.
 - **Ask or go straight in** — `asksBeforeReporting` (default `true`): a shake raises the
   "Spotted a problem?" yes/no banner first, or opens the report form directly (`false`).
+- **Accessibility state** — every report carries how the device presents the app: dark
+  mode, the text-size multiplier and Dynamic Type category, bold text, VoiceOver, reduce
+  motion, increased contrast, inverted colours and the rest. A tester never mentions it,
+  and it is usually why the layout looks broken on their screen and nowhere else.
 - **No PII** — telemetry is device-state only (no IP/SSID/location).
 
 ## Installation

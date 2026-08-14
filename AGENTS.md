@@ -135,7 +135,11 @@ validation).
       background threshold that ends a logical session **must equal Android's**.
   - Core stays log-source agnostic: no logging-library types or names in `Sources/`
     (concrete bridges live only in docs and the integration template).
-  - No PII (IP/SSID/location) is ever added to telemetry.
+  - No PII (IP/SSID/location) is ever added to telemetry. The `telemetry.accessibility`
+    block (dark mode, text size, VoiceOver, reduce motion, …) shares its keys and its
+    vocabulary with Android's; a field the platform cannot read stays absent, so the panel
+    can tell "off" from "not knowable here". It is optional the way the session fields
+    are — a report without it renders as it always did.
 - Backend assumptions:
   - HTTPS — `POST <reportsPath>` (multipart: `report` JSON part + optional `screenshot`
     part, `x-collie-api-key` header) and `GET <configPath>`; both overridable via

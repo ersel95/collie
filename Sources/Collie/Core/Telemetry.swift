@@ -23,13 +23,18 @@ public struct CollieTelemetry: Codable, Sendable {
     public let totalDiskBytes: Int64?
     public let totalMemoryBytes: Int64?
     public let appMemoryBytes: Int64?
+    /// Display and accessibility settings the device is running with. Nested rather than
+    /// flattened so the panel can render it as its own block, and so a report filed by an
+    /// SDK that predates it simply has no `accessibility` key.
+    public let accessibility: CollieAccessibilityState?
 
     public init(
         timezone: String?, screenScale: Double?, screenPoints: String?,
         networkType: String?, batteryLevel: Int?, batteryState: String?,
         lowPowerMode: Bool?, thermalState: String?, orientation: String?,
         freeDiskBytes: Int64?, totalDiskBytes: Int64?,
-        totalMemoryBytes: Int64?, appMemoryBytes: Int64?
+        totalMemoryBytes: Int64?, appMemoryBytes: Int64?,
+        accessibility: CollieAccessibilityState? = nil
     ) {
         self.timezone = timezone
         self.screenScale = screenScale
@@ -44,6 +49,85 @@ public struct CollieTelemetry: Codable, Sendable {
         self.totalDiskBytes = totalDiskBytes
         self.totalMemoryBytes = totalMemoryBytes
         self.appMemoryBytes = appMemoryBytes
+        self.accessibility = accessibility
+    }
+}
+
+/// How the device is configured to *present* the app: dark mode, text size, and which
+/// accessibility features are switched on.
+///
+/// A tester rarely mentions any of this — "the button is cut off" and "I can't read the
+/// price" are the same sentence whether the device runs at the default text size or at
+/// AX5 with bold text — so the report has to carry it. Reading a screenshot back against
+/// these values is what turns an unreproducible layout complaint into a known one.
+///
+/// Still device state, not PII: every field is a system setting, and nothing here names
+/// the person, the network or the place.
+///
+/// The vocabulary is shared with the Android SDK so one panel column reads both platforms.
+/// A field the platform has no equivalent for stays `nil` and is omitted from the upload
+/// — `nil` means "not knowable here", never "off".
+public struct CollieAccessibilityState: Codable, Sendable {
+    /// `dark` / `light` / `unspecified`.
+    public let interfaceStyle: String?
+    /// The text-size multiplier the app actually renders at (1.0 = default).
+    public let fontScale: Double?
+    /// Dynamic Type category, iOS's own name for the same setting: `L`, `XXL`, `AX3`…
+    /// (Android has no equivalent — `fontScale` is the cross-platform field.)
+    public let contentSize: String?
+    public let boldText: Bool?
+    /// VoiceOver on iOS, TalkBack on Android.
+    public let screenReader: Bool?
+    public let switchControl: Bool?
+    public let assistiveTouch: Bool?
+    public let speakScreen: Bool?
+    public let reduceMotion: Bool?
+    public let reduceTransparency: Bool?
+    /// "Increase Contrast" on iOS, "High contrast text" on Android.
+    public let increaseContrast: Bool?
+    public let invertColors: Bool?
+    public let grayscale: Bool?
+    public let differentiateWithoutColor: Bool?
+    public let onOffLabels: Bool?
+    public let closedCaptions: Bool?
+    public let monoAudio: Bool?
+
+    public init(
+        interfaceStyle: String? = nil,
+        fontScale: Double? = nil,
+        contentSize: String? = nil,
+        boldText: Bool? = nil,
+        screenReader: Bool? = nil,
+        switchControl: Bool? = nil,
+        assistiveTouch: Bool? = nil,
+        speakScreen: Bool? = nil,
+        reduceMotion: Bool? = nil,
+        reduceTransparency: Bool? = nil,
+        increaseContrast: Bool? = nil,
+        invertColors: Bool? = nil,
+        grayscale: Bool? = nil,
+        differentiateWithoutColor: Bool? = nil,
+        onOffLabels: Bool? = nil,
+        closedCaptions: Bool? = nil,
+        monoAudio: Bool? = nil
+    ) {
+        self.interfaceStyle = interfaceStyle
+        self.fontScale = fontScale
+        self.contentSize = contentSize
+        self.boldText = boldText
+        self.screenReader = screenReader
+        self.switchControl = switchControl
+        self.assistiveTouch = assistiveTouch
+        self.speakScreen = speakScreen
+        self.reduceMotion = reduceMotion
+        self.reduceTransparency = reduceTransparency
+        self.increaseContrast = increaseContrast
+        self.invertColors = invertColors
+        self.grayscale = grayscale
+        self.differentiateWithoutColor = differentiateWithoutColor
+        self.onOffLabels = onOffLabels
+        self.closedCaptions = closedCaptions
+        self.monoAudio = monoAudio
     }
 }
 
@@ -78,8 +162,98 @@ public enum CollieTelemetryCollector {
             freeDiskBytes: disk.free,
             totalDiskBytes: disk.total,
             totalMemoryBytes: Int64(ProcessInfo.processInfo.physicalMemory),
-            appMemoryBytes: appMemoryBytes()
+            appMemoryBytes: appMemoryBytes(),
+            accessibility: accessibilityState()
         )
+    }
+
+    // MARK: - Accessibility & appearance
+
+    /// Every switch is a synchronous `UIAccessibility` read, so this costs nothing and
+    /// needs no preparation — unlike the battery and the network path.
+    @MainActor
+    private static func accessibilityState() -> CollieAccessibilityState? {
+        #if canImport(UIKit)
+        return CollieAccessibilityState(
+            interfaceStyle: interfaceStyleString(),
+            fontScale: fontScale(),
+            contentSize: contentSizeString(),
+            boldText: UIAccessibility.isBoldTextEnabled,
+            screenReader: UIAccessibility.isVoiceOverRunning,
+            switchControl: UIAccessibility.isSwitchControlRunning,
+            assistiveTouch: UIAccessibility.isAssistiveTouchRunning,
+            speakScreen: UIAccessibility.isSpeakScreenEnabled,
+            reduceMotion: UIAccessibility.isReduceMotionEnabled,
+            reduceTransparency: UIAccessibility.isReduceTransparencyEnabled,
+            increaseContrast: UIAccessibility.isDarkerSystemColorsEnabled,
+            invertColors: UIAccessibility.isInvertColorsEnabled,
+            grayscale: UIAccessibility.isGrayscaleEnabled,
+            differentiateWithoutColor: UIAccessibility.shouldDifferentiateWithoutColor,
+            onOffLabels: UIAccessibility.isOnOffSwitchLabelsEnabled,
+            closedCaptions: UIAccessibility.isClosedCaptioningEnabled,
+            monoAudio: UIAccessibility.isMonoAudioEnabled
+        )
+        #else
+        return nil
+        #endif
+    }
+
+    /// Read outside any draw or layout callback (the report is sent from a button tap),
+    /// where `UITraitCollection.current` resolves to the screen's traits — the *device's*
+    /// appearance setting, which is what was asked for. A host that overrides the style
+    /// for its own windows therefore does not hide the setting the tester is running.
+    @MainActor
+    private static func interfaceStyleString() -> String? {
+        #if canImport(UIKit)
+        switch UITraitCollection.current.userInterfaceStyle {
+        case .dark: return "dark"
+        case .light: return "light"
+        case .unspecified: return "unspecified"
+        @unknown default: return "unspecified"
+        }
+        #else
+        return nil
+        #endif
+    }
+
+    /// iOS exposes Dynamic Type as a *category*, not a number, so the multiplier is
+    /// measured instead: how tall a body-text point size comes back after scaling. That is
+    /// the same quantity Android reports as `fontScale`, which is what lets one panel
+    /// column compare the two platforms.
+    @MainActor
+    private static func fontScale() -> Double? {
+        #if canImport(UIKit)
+        let base = 17.0   // the body text style's default point size
+        let scaled = Double(UIFontMetrics(forTextStyle: .body).scaledValue(for: CGFloat(base)))
+        return ((scaled / base) * 100).rounded() / 100
+        #else
+        return nil
+        #endif
+    }
+
+    /// The raw values are `UICTContentSizeCategoryL`-style identifiers; the short forms
+    /// are what a person triaging a report reads.
+    @MainActor
+    private static func contentSizeString() -> String? {
+        #if canImport(UIKit)
+        switch UIApplication.shared.preferredContentSizeCategory {
+        case .extraSmall: return "XS"
+        case .small: return "S"
+        case .medium: return "M"
+        case .large: return "L"
+        case .extraLarge: return "XL"
+        case .extraExtraLarge: return "XXL"
+        case .extraExtraExtraLarge: return "XXXL"
+        case .accessibilityMedium: return "AX1"
+        case .accessibilityLarge: return "AX2"
+        case .accessibilityExtraLarge: return "AX3"
+        case .accessibilityExtraExtraLarge: return "AX4"
+        case .accessibilityExtraExtraExtraLarge: return "AX5"
+        default: return UIApplication.shared.preferredContentSizeCategory.rawValue
+        }
+        #else
+        return nil
+        #endif
     }
 
     // MARK: - Screen

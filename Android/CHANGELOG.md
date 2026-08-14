@@ -3,6 +3,30 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.5.0 — 2026-08-14
+
+### Added
+- **Every report now says how the device presents the app** — the Android half of iOS
+  1.16.0, under the same keys. Telemetry gains a nested `accessibility` block: appearance
+  (`interfaceStyle`, from the night-mode configuration), `fontScale`, `boldText` (the font
+  weight adjustment, API 31+), `screenReader` (TalkBack, via touch exploration),
+  `reduceMotion` ("Remove animations"), `increaseContrast` ("High contrast text"),
+  `invertColors`, `grayscale` (colour correction set to monochromacy), `closedCaptions` and
+  `monoAudio`.
+
+  A tester never mentions any of this, and it is usually why a layout complaint reproduces
+  on their device and nowhere else.
+
+  Still device state, not PII, and **no new permission**: the toggles Android has no public
+  API for are read by their AOSP settings key, and a read that fails leaves the field
+  absent rather than claiming the setting is off. iOS-only settings (`contentSize`, switch
+  control, AssistiveTouch, Speak Screen, reduce transparency, differentiate-without-colour,
+  on/off labels) stay absent here rather than being invented.
+
+  The block is **additive and optional** — a report filed by an older SDK has no
+  `accessibility` key and the panel renders it exactly as it did. `CollieTelemetry` gains a
+  trailing `accessibility` parameter defaulting to `null`, mirrored in the no-op artifact.
+
 ## 0.4.0 — 2026-08-13
 
 ### Changed

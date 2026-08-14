@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.16.0 — 2026-08-14
+
+### Added
+- **Every report now says how the device presents the app.** Telemetry gains a nested
+  `accessibility` block: appearance (`interfaceStyle` — dark or light), text size
+  (`fontScale`, plus iOS's own `contentSize` category: `L`, `XXL`, `AX3`…) and the
+  accessibility switches — `boldText`, `screenReader` (VoiceOver), `switchControl`,
+  `assistiveTouch`, `speakScreen`, `reduceMotion`, `reduceTransparency`,
+  `increaseContrast`, `invertColors`, `grayscale`, `differentiateWithoutColor`,
+  `onOffLabels`, `closedCaptions`, `monoAudio`.
+
+  A tester never mentions any of this. "The button is cut off" and "I can't read the
+  price" are the same sentence whether the device runs at the default text size or at AX5
+  with bold text, so the layout complaint that reproduces nowhere else stays
+  unreproducible. Reading the screenshot back against these values is what ends that.
+
+  Still device state, not PII: every field is a system setting, and nothing here names the
+  person, the network or the place.
+
+  The block is **additive and optional**, like the session fields before it — a report
+  filed by an older SDK simply has no `accessibility` key, and the panel renders it
+  exactly as it did. A setting the platform cannot read is *absent* rather than `false`,
+  so the panel can tell "off" from "not knowable here". Android 0.5.0 sends the same keys.
+
+  `CollieTelemetry` gains a trailing `accessibility:` parameter with a `nil` default, so
+  existing call sites keep compiling.
+
 ## 1.15.0 — 2026-08-13
 
 ### Changed

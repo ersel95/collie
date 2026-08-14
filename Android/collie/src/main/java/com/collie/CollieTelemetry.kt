@@ -10,7 +10,11 @@ import android.os.BatteryManager
 import android.os.Build
 import android.os.PowerManager
 import android.os.StatFs
+import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
+import android.view.accessibility.CaptioningManager
 import java.util.TimeZone
+import kotlin.math.roundToInt
 
 /**
  * Point-in-time device state at the moment the report was taken. Device-state only,
@@ -31,6 +35,56 @@ public data class CollieTelemetry(
     public val totalDiskBytes: Long?,
     public val totalMemoryBytes: Long?,
     public val appMemoryBytes: Long?,
+    /**
+     * Display and accessibility settings the device is running with. Nested rather than
+     * flattened so the panel can render it as its own block, and so a report filed by an
+     * SDK that predates it simply has no `accessibility` key.
+     */
+    public val accessibility: CollieAccessibilityState? = null,
+)
+
+/**
+ * How the device is configured to *present* the app: dark mode, text size, and which
+ * accessibility features are switched on.
+ *
+ * A tester rarely mentions any of this — "the button is cut off" and "I can't read the
+ * price" are the same sentence whether the device runs at the default text size or at 2×
+ * with bold text — so the report has to carry it. Reading a screenshot back against these
+ * values is what turns an unreproducible layout complaint into a known one.
+ *
+ * Still device state, not PII: every field is a system setting, and nothing here names the
+ * person, the network or the place. Nothing is read that would require a permission.
+ *
+ * The vocabulary is shared with the iOS SDK so one panel column reads both platforms. A
+ * field the platform has no equivalent for stays `null` and is omitted from the upload —
+ * `null` means "not knowable here", never "off".
+ */
+public data class CollieAccessibilityState(
+    /** `dark` / `light` / `unspecified`. */
+    public val interfaceStyle: String? = null,
+    /** The text-size multiplier the app actually renders at (1.0 = default). */
+    public val fontScale: Double? = null,
+    /**
+     * Dynamic Type category — iOS only (`L`, `XXL`, `AX3`…). Android has no categories,
+     * so [fontScale] is the cross-platform field.
+     */
+    public val contentSize: String? = null,
+    public val boldText: Boolean? = null,
+    /** TalkBack on Android, VoiceOver on iOS. */
+    public val screenReader: Boolean? = null,
+    public val switchControl: Boolean? = null,
+    public val assistiveTouch: Boolean? = null,
+    public val speakScreen: Boolean? = null,
+    public val reduceMotion: Boolean? = null,
+    public val reduceTransparency: Boolean? = null,
+    /** "High contrast text" on Android, "Increase Contrast" on iOS. */
+    public val increaseContrast: Boolean? = null,
+    public val invertColors: Boolean? = null,
+    public val grayscale: Boolean? = null,
+    public val differentiateWithoutColor: Boolean? = null,
+    public val onOffLabels: Boolean? = null,
+    public val closedCaptions: Boolean? = null,
+    public val monoAudio: Boolean? = null,
 )
 
 /** Collects the point-in-time device telemetry. */
@@ -60,8 +114,110 @@ public object CollieTelemetryCollector {
             totalDiskBytes = diskBytes(app)?.second,
             totalMemoryBytes = totalMemoryBytes(),
             appMemoryBytes = appMemoryBytes(),
+            accessibility = accessibility(app),
         )
     }
+
+    // MARK: - Accessibility & appearance
+
+    /**
+     * The switches iOS reads from `UIAccessibility` live in three different places here:
+     * the configuration (night mode, font scale, font weight), a system service
+     * (TalkBack, captions) and `Settings.Secure` / `Settings.Global` for the display
+     * toggles Android has no public API for. Every read is guarded; a read that fails
+     * outright leaves the field `null` rather than claiming the setting is off.
+     *
+     * The fields left at their defaults (switch control, AssistiveTouch, Speak Screen,
+     * reduce transparency, differentiate-without-colour, on/off labels) are iOS-only
+     * settings with no Android equivalent.
+     */
+    private fun accessibility(context: Context): CollieAccessibilityState {
+        val configuration = context.resources.configuration
+        return CollieAccessibilityState(
+            interfaceStyle = interfaceStyle(configuration),
+            fontScale = (configuration.fontScale * 100f).roundToInt() / 100.0,
+            boldText = boldText(configuration),
+            screenReader = screenReader(context),
+            reduceMotion = reduceMotion(context),
+            increaseContrast = secureFlag(context, HIGH_TEXT_CONTRAST),
+            invertColors = secureFlag(context, COLOR_INVERSION),
+            grayscale = grayscale(context),
+            closedCaptions = closedCaptions(context),
+            monoAudio = systemFlag(context, MASTER_MONO),
+        )
+    }
+
+    private fun interfaceStyle(configuration: Configuration): String =
+        when (configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) {
+            Configuration.UI_MODE_NIGHT_YES -> "dark"
+            Configuration.UI_MODE_NIGHT_NO -> "light"
+            else -> "unspecified"
+        }
+
+    /** "Bold text" moves every weight up; the setting itself is not readable directly. */
+    private fun boldText(configuration: Configuration): Boolean? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        val adjustment = configuration.fontWeightAdjustment
+        if (adjustment == Configuration.FONT_WEIGHT_ADJUSTMENT_UNDEFINED) return null
+        return adjustment != 0
+    }
+
+    /**
+     * Touch exploration, not merely "an accessibility service is enabled": that is what
+     * TalkBack turns on, and the reason a tester's taps land somewhere else than they
+     * expect.
+     */
+    private fun screenReader(context: Context): Boolean? =
+        (context.getSystemService(Context.ACCESSIBILITY_SERVICE) as? AccessibilityManager)
+            ?.isTouchExplorationEnabled
+
+    /**
+     * "Remove animations" zeroes the animator scale; a report filed from such a device
+     * explains a missing transition that reproduces nowhere else.
+     */
+    private fun reduceMotion(context: Context): Boolean? = runCatching {
+        Settings.Global.getFloat(
+            context.contentResolver,
+            Settings.Global.ANIMATOR_DURATION_SCALE,
+            1f, // the platform's own default: animations at normal speed
+        ) == 0f
+    }.getOrNull()
+
+    /** Colour correction set to monochromacy — Android's equivalent of iOS's grayscale. */
+    private fun grayscale(context: Context): Boolean? {
+        val enabled = secureFlag(context, COLOR_CORRECTION_ENABLED) ?: return null
+        if (!enabled) return false
+        val mode = secureInt(context, COLOR_CORRECTION_MODE) ?: return null
+        return mode == COLOR_CORRECTION_MONOCHROMACY
+    }
+
+    private fun closedCaptions(context: Context): Boolean? =
+        (context.getSystemService(Context.CAPTIONING_SERVICE) as? CaptioningManager)?.isEnabled
+
+    /**
+     * A toggle the user has never touched has no row in the settings table, and the
+     * platform's own readers treat that absence as off — so does this. `null` is kept for
+     * a read that fails outright, which is the only case where the value is unknowable.
+     */
+    private fun secureFlag(context: Context, key: String): Boolean? =
+        runCatching { Settings.Secure.getInt(context.contentResolver, key, 0) == 1 }.getOrNull()
+
+    /** Reads a setting whose absence is not meaningfully "0" — a mode, not a switch. */
+    private fun secureInt(context: Context, key: String): Int? =
+        runCatching { Settings.Secure.getInt(context.contentResolver, key, UNSET) }
+            .getOrNull()?.takeIf { it != UNSET }
+
+    private fun systemFlag(context: Context, key: String): Boolean? =
+        runCatching { Settings.System.getInt(context.contentResolver, key, 0) == 1 }.getOrNull()
+
+    // Settings keys with no public constant. Reading them needs no permission.
+    private const val UNSET = -1
+    private const val HIGH_TEXT_CONTRAST = "high_text_contrast_enabled"
+    private const val COLOR_INVERSION = "accessibility_display_inversion_enabled"
+    private const val COLOR_CORRECTION_ENABLED = "accessibility_display_daltonizer_enabled"
+    private const val COLOR_CORRECTION_MODE = "accessibility_display_daltonizer"
+    private const val COLOR_CORRECTION_MONOCHROMACY = 0
+    private const val MASTER_MONO = "master_mono"
 
     // MARK: - Screen
 

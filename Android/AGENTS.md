@@ -74,7 +74,17 @@ changes:
   `sequence` / `sessionOrdinal` / `previousReportAt` survive a kill; `processStartedAt` resets
   with the process. `BACKGROUND_SESSION_THRESHOLD_MILLIS` **must equal the iOS SDK's**
   `backgroundSessionThreshold`, or one scenario folds differently on the two platforms.
-- **No PII in telemetry.** No IP, SSID or location, ever.
+- **No PII in telemetry.** No IP, SSID or location, ever. The `telemetry.accessibility` block
+  (dark mode, font scale, TalkBack, remove-animations, …) uses **the same keys and vocabulary as
+  iOS** — it is one panel column per setting, not one per platform. iOS-only settings
+  (`contentSize`, switch control, AssistiveTouch, Speak Screen, reduce transparency,
+  differentiate-without-colour, on/off labels) stay absent here rather than being invented, and a
+  settings read that fails leaves the field absent too: the panel must be able to tell "off" from
+  "not knowable here". The toggles without a public API are read by their AOSP settings key
+  (`high_text_contrast_enabled`, `accessibility_display_inversion_enabled`,
+  `accessibility_display_daltonizer[_enabled]`, `master_mono`) — no permission needed, and an
+  untouched toggle is absent from the settings table, which the platform's own readers (and this
+  one) treat as off.
 - **`FLAG_SECURE` is honoured.** `PixelCopy` is not attempted on a secure window; the fallback
   draws the view hierarchy. Do not add a path around this.
 - **Markup replaces the image.** `MarkupEditor` hands back a complete replacement bitmap,

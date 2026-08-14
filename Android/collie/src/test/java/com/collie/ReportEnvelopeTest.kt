@@ -232,27 +232,74 @@ class ReportEnvelopeTest {
 
     @Test
     fun `telemetry is encoded when present and drops unavailable fields`() {
-        val telemetry = CollieTelemetry(
-            timezone = "Europe/Istanbul",
-            screenScale = 3.0,
-            screenPoints = "412x915",
-            networkType = "wifi",
-            batteryLevel = 82,
-            batteryState = "unplugged",
-            lowPowerMode = false,
-            thermalState = "nominal",
-            orientation = "portrait",
-            freeDiskBytes = 1_000L,
-            totalDiskBytes = 2_000L,
-            totalMemoryBytes = null,
-            appMemoryBytes = null,
-        )
-        val encoded = envelope(telemetry = telemetry).getJSONObject("telemetry")
+        val encoded = envelope(telemetry = telemetry()).getJSONObject("telemetry")
         assertEquals("Europe/Istanbul", encoded.getString("timezone"))
         assertEquals(82, encoded.getInt("batteryLevel"))
         // No PII ever, and fields that could not be collected vanish rather than
         // travelling as nulls the panel would have to special-case.
         assertFalse(encoded.has("totalMemoryBytes"))
         assertFalse(encoded.has("appMemoryBytes"))
+    }
+
+    private fun telemetry(accessibility: CollieAccessibilityState? = null) = CollieTelemetry(
+        timezone = "Europe/Istanbul",
+        screenScale = 3.0,
+        screenPoints = "412x915",
+        networkType = "wifi",
+        batteryLevel = 82,
+        batteryState = "unplugged",
+        lowPowerMode = false,
+        thermalState = "nominal",
+        orientation = "portrait",
+        freeDiskBytes = 1_000L,
+        totalDiskBytes = 2_000L,
+        totalMemoryBytes = null,
+        appMemoryBytes = null,
+        accessibility = accessibility,
+    )
+
+    // MARK: - Accessibility (how the device presents the app)
+
+    @Test
+    fun `the accessibility state is encoded inside telemetry`() {
+        // Dark mode, text size and the accessibility switches travel as a nested block
+        // inside `telemetry`, under the same keys `ReportEnvelopeTests.swift` asserts.
+        val accessibility = CollieAccessibilityState(
+            interfaceStyle = "dark",
+            fontScale = 1.35,
+            boldText = true,
+            screenReader = false,
+            reduceMotion = true,
+            increaseContrast = false,
+            invertColors = false,
+        )
+        val encoded = envelope(telemetry = telemetry(accessibility))
+            .getJSONObject("telemetry").getJSONObject("accessibility")
+        assertEquals("dark", encoded.getString("interfaceStyle"))
+        assertEquals(1.35, encoded.getDouble("fontScale"), 0.001)
+        assertTrue(encoded.getBoolean("boldText"))
+        assertFalse(encoded.getBoolean("screenReader"))
+        assertTrue(encoded.getBoolean("reduceMotion"))
+    }
+
+    @Test
+    fun `a setting this platform cannot read is omitted rather than sent as false`() {
+        // `contentSize` and the iOS-only switches have no Android equivalent, and a settings
+        // read that fails leaves its field unset — the panel has to be able to tell "off"
+        // from "not knowable here".
+        val encoded = envelope(telemetry = telemetry(CollieAccessibilityState(interfaceStyle = "light")))
+            .getJSONObject("telemetry").getJSONObject("accessibility")
+        assertEquals("light", encoded.getString("interfaceStyle"))
+        listOf("contentSize", "switchControl", "assistiveTouch", "reduceTransparency", "monoAudio")
+            .forEach { key -> assertFalse("$key should be omitted", encoded.has(key)) }
+    }
+
+    @Test
+    fun `accessibility is omitted when absent`() {
+        // A report from an SDK version that never collected it has no `accessibility` key
+        // at all — the block is additive, like the session context before it.
+        val encoded = envelope(telemetry = telemetry()).getJSONObject("telemetry")
+        assertFalse(encoded.has("accessibility"))
+        assertEquals("Europe/Istanbul", encoded.getString("timezone"))
     }
 }

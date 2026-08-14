@@ -86,6 +86,39 @@ public data class CollieTelemetry(
     public val totalDiskBytes: Long?,
     public val totalMemoryBytes: Long?,
     public val appMemoryBytes: Long?,
+    public val accessibility: CollieAccessibilityState? = null,
+    public val permissions: ColliePermissionState? = null,
+)
+
+/** Same shape as the real state; a release build never reads a single setting. */
+public data class CollieAccessibilityState(
+    public val interfaceStyle: String? = null,
+    public val fontScale: Double? = null,
+    public val contentSize: String? = null,
+    public val boldText: Boolean? = null,
+    public val screenReader: Boolean? = null,
+    public val switchControl: Boolean? = null,
+    public val assistiveTouch: Boolean? = null,
+    public val speakScreen: Boolean? = null,
+    public val reduceMotion: Boolean? = null,
+    public val reduceTransparency: Boolean? = null,
+    public val increaseContrast: Boolean? = null,
+    public val invertColors: Boolean? = null,
+    public val grayscale: Boolean? = null,
+    public val differentiateWithoutColor: Boolean? = null,
+    public val onOffLabels: Boolean? = null,
+    public val closedCaptions: Boolean? = null,
+    public val monoAudio: Boolean? = null,
+)
+
+/** Same shape as the real state; a release build never reads a permission status. */
+public data class ColliePermissionState(
+    public val camera: String? = null,
+    public val microphone: String? = null,
+    public val photoLibrary: String? = null,
+    public val location: String? = null,
+    public val locationAccuracy: String? = null,
+    public val notifications: String? = null,
 )
 
 public object CollieTelemetryCollector {
@@ -104,6 +137,8 @@ public object CollieTelemetryCollector {
         totalDiskBytes = null,
         totalMemoryBytes = null,
         appMemoryBytes = null,
+        accessibility = null,
+        permissions = null,
     )
 }
 

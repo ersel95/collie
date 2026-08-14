@@ -11,7 +11,8 @@ import Foundation
 ///                  "previousReportAt": …, "sessionStartedAt": …, "processStartedAt": …,
 ///                  "sessionOrdinal": …, "sequence": … },
 ///   "entries":   [ /* raw CollieLogEntry[] — ALL categories, lossless */ ],
-///   "telemetry": { /* point-in-time device state, no PII */ }
+///   "telemetry": { /* point-in-time device state, no PII — including the nested
+///                     "accessibility" block: dark mode, text size, VoiceOver, … */ }
 /// }
 /// ```
 ///

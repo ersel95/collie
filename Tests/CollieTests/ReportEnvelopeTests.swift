@@ -253,17 +253,115 @@ final class ReportEnvelopeTests: XCTestCase {
     }
 
     func testTelemetryIsEncodedWhenPresent() throws {
-        let telemetry = CollieTelemetry(
-            timezone: "Europe/Istanbul", screenScale: 3, screenPoints: "393x852",
-            networkType: "wifi", batteryLevel: 82, batteryState: "unplugged",
-            lowPowerMode: false, thermalState: "nominal", orientation: "portrait",
-            freeDiskBytes: 1024, totalDiskBytes: 2048,
-            totalMemoryBytes: 4096, appMemoryBytes: 512
-        )
-        let json = try encodeToJSON(makeContext(telemetry: telemetry))
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry()))
         let encoded = try XCTUnwrap(json["telemetry"] as? [String: Any])
         XCTAssertEqual(encoded["timezone"] as? String, "Europe/Istanbul")
         XCTAssertEqual(encoded["batteryLevel"] as? Int, 82)
         XCTAssertEqual(encoded["networkType"] as? String, "wifi")
+    }
+
+    private func makeTelemetry(
+        accessibility: CollieAccessibilityState? = nil,
+        permissions: ColliePermissionState? = nil
+    ) -> CollieTelemetry {
+        CollieTelemetry(
+            timezone: "Europe/Istanbul", screenScale: 3, screenPoints: "393x852",
+            networkType: "wifi", batteryLevel: 82, batteryState: "unplugged",
+            lowPowerMode: false, thermalState: "nominal", orientation: "portrait",
+            freeDiskBytes: 1024, totalDiskBytes: 2048,
+            totalMemoryBytes: 4096, appMemoryBytes: 512,
+            accessibility: accessibility,
+            permissions: permissions
+        )
+    }
+
+    // MARK: - Accessibility (how the device presents the app)
+
+    /// Dark mode, text size and the accessibility switches travel as a nested block
+    /// inside `telemetry` — the same keys the Android SDK sends.
+    func testAccessibilityStateIsEncodedInsideTelemetry() throws {
+        let accessibility = CollieAccessibilityState(
+            interfaceStyle: "dark",
+            fontScale: 1.35,
+            contentSize: "AX3",
+            boldText: true,
+            screenReader: false,
+            reduceMotion: true,
+            increaseContrast: false,
+            invertColors: false
+        )
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(accessibility: accessibility)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["accessibility"] as? [String: Any])
+        XCTAssertEqual(encoded["interfaceStyle"] as? String, "dark")
+        XCTAssertEqual(encoded["fontScale"] as? Double, 1.35)
+        XCTAssertEqual(encoded["contentSize"] as? String, "AX3")
+        XCTAssertEqual(encoded["boldText"] as? Bool, true)
+        XCTAssertEqual(encoded["screenReader"] as? Bool, false)
+        XCTAssertEqual(encoded["reduceMotion"] as? Bool, true)
+    }
+
+    /// A setting this platform cannot read is absent, not `false` — the panel must be able
+    /// to tell "off" from "not knowable here".
+    func testUnknownAccessibilitySettingsAreOmitted() throws {
+        let accessibility = CollieAccessibilityState(interfaceStyle: "light", grayscale: false)
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(accessibility: accessibility)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["accessibility"] as? [String: Any])
+        XCTAssertEqual(encoded["grayscale"] as? Bool, false)
+        for key in ["fontScale", "contentSize", "boldText", "screenReader", "monoAudio"] {
+            XCTAssertNil(encoded[key], "\(key) should be omitted")
+        }
+    }
+
+    /// A report from an SDK version that never collected it has no `accessibility` key at
+    /// all — the block is additive, like the session context before it.
+    func testAccessibilityIsOmittedWhenAbsent() throws {
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry()))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        XCTAssertNil(telemetry["accessibility"])
+        XCTAssertEqual(telemetry["timezone"] as? String, "Europe/Istanbul")
+    }
+
+    // MARK: - Permissions (what the tester answered to the prompts)
+
+    /// The grants travel as their own nested block, under the keys the Android SDK sends.
+    func testPermissionStateIsEncodedInsideTelemetry() throws {
+        let permissions = ColliePermissionState(
+            camera: "granted",
+            microphone: "denied",
+            photoLibrary: "limited",
+            location: "whenInUse",
+            locationAccuracy: "reduced",
+            notifications: "denied"
+        )
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(permissions: permissions)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["permissions"] as? [String: Any])
+        XCTAssertEqual(encoded["camera"] as? String, "granted")
+        XCTAssertEqual(encoded["microphone"] as? String, "denied")
+        XCTAssertEqual(encoded["photoLibrary"] as? String, "limited")
+        XCTAssertEqual(encoded["location"] as? String, "whenInUse")
+        XCTAssertEqual(encoded["locationAccuracy"] as? String, "reduced")
+        XCTAssertEqual(encoded["notifications"] as? String, "denied")
+    }
+
+    /// A permission the host app never uses is absent — "the app has no camera feature"
+    /// and "the tester declined the camera" must not read the same in the panel.
+    func testUnusedPermissionsAreOmitted() throws {
+        let permissions = ColliePermissionState(camera: "granted")
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry(permissions: permissions)))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        let encoded = try XCTUnwrap(telemetry["permissions"] as? [String: Any])
+        XCTAssertEqual(encoded["camera"] as? String, "granted")
+        for key in ["microphone", "photoLibrary", "location", "locationAccuracy", "notifications"] {
+            XCTAssertNil(encoded[key], "\(key) should be omitted")
+        }
+    }
+
+    func testPermissionsAreOmittedWhenAbsent() throws {
+        let json = try encodeToJSON(makeContext(telemetry: makeTelemetry()))
+        let telemetry = try XCTUnwrap(json["telemetry"] as? [String: Any])
+        XCTAssertNil(telemetry["permissions"])
     }
 }

@@ -232,27 +232,118 @@ class ReportEnvelopeTest {
 
     @Test
     fun `telemetry is encoded when present and drops unavailable fields`() {
-        val telemetry = CollieTelemetry(
-            timezone = "Europe/Istanbul",
-            screenScale = 3.0,
-            screenPoints = "412x915",
-            networkType = "wifi",
-            batteryLevel = 82,
-            batteryState = "unplugged",
-            lowPowerMode = false,
-            thermalState = "nominal",
-            orientation = "portrait",
-            freeDiskBytes = 1_000L,
-            totalDiskBytes = 2_000L,
-            totalMemoryBytes = null,
-            appMemoryBytes = null,
-        )
-        val encoded = envelope(telemetry = telemetry).getJSONObject("telemetry")
+        val encoded = envelope(telemetry = telemetry()).getJSONObject("telemetry")
         assertEquals("Europe/Istanbul", encoded.getString("timezone"))
         assertEquals(82, encoded.getInt("batteryLevel"))
         // No PII ever, and fields that could not be collected vanish rather than
         // travelling as nulls the panel would have to special-case.
         assertFalse(encoded.has("totalMemoryBytes"))
         assertFalse(encoded.has("appMemoryBytes"))
+    }
+
+    private fun telemetry(
+        accessibility: CollieAccessibilityState? = null,
+        permissions: ColliePermissionState? = null,
+    ) = CollieTelemetry(
+        timezone = "Europe/Istanbul",
+        screenScale = 3.0,
+        screenPoints = "412x915",
+        networkType = "wifi",
+        batteryLevel = 82,
+        batteryState = "unplugged",
+        lowPowerMode = false,
+        thermalState = "nominal",
+        orientation = "portrait",
+        freeDiskBytes = 1_000L,
+        totalDiskBytes = 2_000L,
+        totalMemoryBytes = null,
+        appMemoryBytes = null,
+        accessibility = accessibility,
+        permissions = permissions,
+    )
+
+    // MARK: - Accessibility (how the device presents the app)
+
+    @Test
+    fun `the accessibility state is encoded inside telemetry`() {
+        // Dark mode, text size and the accessibility switches travel as a nested block
+        // inside `telemetry`, under the same keys `ReportEnvelopeTests.swift` asserts.
+        val accessibility = CollieAccessibilityState(
+            interfaceStyle = "dark",
+            fontScale = 1.35,
+            boldText = true,
+            screenReader = false,
+            reduceMotion = true,
+            increaseContrast = false,
+            invertColors = false,
+        )
+        val encoded = envelope(telemetry = telemetry(accessibility))
+            .getJSONObject("telemetry").getJSONObject("accessibility")
+        assertEquals("dark", encoded.getString("interfaceStyle"))
+        assertEquals(1.35, encoded.getDouble("fontScale"), 0.001)
+        assertTrue(encoded.getBoolean("boldText"))
+        assertFalse(encoded.getBoolean("screenReader"))
+        assertTrue(encoded.getBoolean("reduceMotion"))
+    }
+
+    @Test
+    fun `a setting this platform cannot read is omitted rather than sent as false`() {
+        // `contentSize` and the iOS-only switches have no Android equivalent, and a settings
+        // read that fails leaves its field unset — the panel has to be able to tell "off"
+        // from "not knowable here".
+        val encoded = envelope(telemetry = telemetry(CollieAccessibilityState(interfaceStyle = "light")))
+            .getJSONObject("telemetry").getJSONObject("accessibility")
+        assertEquals("light", encoded.getString("interfaceStyle"))
+        listOf("contentSize", "switchControl", "assistiveTouch", "reduceTransparency", "monoAudio")
+            .forEach { key -> assertFalse("$key should be omitted", encoded.has(key)) }
+    }
+
+    // MARK: - Permissions (what the tester answered to the prompts)
+
+    @Test
+    fun `the permission state is encoded inside telemetry`() {
+        // The grants travel as their own nested block, under the keys
+        // `ReportEnvelopeTests.swift` asserts.
+        val permissions = ColliePermissionState(
+            camera = "granted",
+            microphone = "denied",
+            photoLibrary = "limited",
+            location = "whenInUse",
+            locationAccuracy = "reduced",
+            notifications = "denied",
+        )
+        val encoded = envelope(telemetry = telemetry(permissions = permissions))
+            .getJSONObject("telemetry").getJSONObject("permissions")
+        assertEquals("granted", encoded.getString("camera"))
+        assertEquals("denied", encoded.getString("microphone"))
+        assertEquals("limited", encoded.getString("photoLibrary"))
+        assertEquals("whenInUse", encoded.getString("location"))
+        assertEquals("reduced", encoded.getString("locationAccuracy"))
+        assertEquals("denied", encoded.getString("notifications"))
+    }
+
+    @Test
+    fun `a permission the host does not declare is omitted`() {
+        // "The app has no camera feature" and "the tester declined the camera" must not
+        // read the same in the panel.
+        val encoded = envelope(telemetry = telemetry(permissions = ColliePermissionState(camera = "granted")))
+            .getJSONObject("telemetry").getJSONObject("permissions")
+        assertEquals("granted", encoded.getString("camera"))
+        listOf("microphone", "photoLibrary", "location", "locationAccuracy", "notifications")
+            .forEach { key -> assertFalse("$key should be omitted", encoded.has(key)) }
+    }
+
+    @Test
+    fun `permissions are omitted when absent`() {
+        assertFalse(envelope(telemetry = telemetry()).getJSONObject("telemetry").has("permissions"))
+    }
+
+    @Test
+    fun `accessibility is omitted when absent`() {
+        // A report from an SDK version that never collected it has no `accessibility` key
+        // at all — the block is additive, like the session context before it.
+        val encoded = envelope(telemetry = telemetry()).getJSONObject("telemetry")
+        assertFalse(encoded.has("accessibility"))
+        assertEquals("Europe/Istanbul", encoded.getString("timezone"))
     }
 }

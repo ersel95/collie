@@ -3,6 +3,51 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.5.0 — 2026-08-14
+
+### Added
+- **Every report now says how the device presents the app** — the Android half of iOS
+  1.16.0, under the same keys. Telemetry gains a nested `accessibility` block: appearance
+  (`interfaceStyle`, from the night-mode configuration), `fontScale`, `boldText` (the font
+  weight adjustment, API 31+), `screenReader` (TalkBack, via touch exploration),
+  `reduceMotion` ("Remove animations"), `increaseContrast` ("High contrast text"),
+  `invertColors`, `grayscale` (colour correction set to monochromacy), `closedCaptions` and
+  `monoAudio`.
+
+  A tester never mentions any of this, and it is usually why a layout complaint reproduces
+  on their device and nowhere else.
+
+  Still device state, not PII, and **no new permission**: the toggles Android has no public
+  API for are read by their AOSP settings key, and a read that fails leaves the field
+  absent rather than claiming the setting is off. iOS-only settings (`contentSize`, switch
+  control, AssistiveTouch, Speak Screen, reduce transparency, differentiate-without-colour,
+  on/off labels) stay absent here rather than being invented.
+
+  The block is **additive and optional** — a report filed by an older SDK has no
+  `accessibility` key and the panel renders it exactly as it did. `CollieTelemetry` gains a
+  trailing `accessibility` parameter defaulting to `null`, mirrored in the no-op artifact.
+
+- **And what the tester answered to the permission prompts** — the Android half of iOS
+  1.16.0. A second nested block, `telemetry.permissions`: `camera`, `microphone`,
+  `photoLibrary` (`limited` for Android 14's partial "Select photos" grant), `location`
+  (`always` for background access, `whenInUse` for either foreground grant) with
+  `locationAccuracy` (`full` for fine, `reduced` for coarse-only), and `notifications`.
+
+  A declined prompt is the invisible cause behind half the reports that read like a broken
+  feature — the camera screen that "opens black", the push that "never arrives".
+
+  **Nothing is requested and nothing is declared.** The statuses come from
+  `checkSelfPermission` and `areNotificationsEnabled()`; Collie adds **no `uses-permission`
+  to its manifest**, so a host's merged manifest is unchanged and filing a report can never
+  raise a prompt. A permission the host does not declare is reported as *absent* rather
+  than `denied` — `checkSelfPermission` cannot tell "declined" from "not used by this app".
+
+  Two differences from iOS, both platform limits: Android cannot distinguish "never asked"
+  from "declined" outside an Activity, so there is no `notDetermined` here; and
+  `notifications` reports the *effective* state, so a channel switched off in system
+  settings reads as `denied` too — which is the state the "push never arrived" report is
+  actually about.
+
 ## 0.4.0 — 2026-08-13
 
 ### Changed

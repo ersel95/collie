@@ -129,7 +129,12 @@ public class FirestoreTransport @JvmOverloads constructor(
                 "Could not decode the report envelope: ${error::class.java.simpleName}: ${error.message}",
             )
         }
-        val rawEntries = json.remove("entries") as? JSONArray
+        // Only an array is the stream this transport knows how to split and trim. Anything
+        // else goes back where it came from and travels inline, as it did before the split —
+        // the stream is what the analyst reads, so an unrecognised shape must not vanish.
+        val removed = json.remove("entries")
+        val rawEntries = removed as? JSONArray
+        if (removed != null && rawEntries == null) json.put("entries", removed)
 
         val documentBytes = json.toString().toByteArray(Charsets.UTF_8).size
         if (documentBytes > configuration.maxDocumentBytes) {

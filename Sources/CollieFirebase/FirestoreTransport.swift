@@ -137,7 +137,11 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         // Measuring the whole envelope instead rejected reports that would have fit
         // perfectly well — a long session's log stream is by far the largest part of an
         // envelope, and none of it lands in the document this limit protects.
-        let rawEntries = document.removeValue(forKey: "entries")
+        // Only an array is the stream this transport knows how to split and trim. Anything
+        // else stays where it is and travels inline, as it did before the split — the stream
+        // is what the analyst reads, so an unrecognised shape must not vanish.
+        let rawEntries = document["entries"] as? [Any]
+        if rawEntries != nil { document.removeValue(forKey: "entries") }
 
         guard let documentBytes = Self.byteSize(of: document) else {
             return .permanentFailure("Could not measure the report envelope")

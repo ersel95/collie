@@ -84,6 +84,11 @@ and derives its Network and Navigation views from it. Collie also inserts one sy
 entry of its own (category `collie`, "Session started — <date&time>") at its
 chronological position in the timeline.
 
+On the **Firebase** path there is one bound the platform imposes: Firestore caps a document
+at 1 MiB, so a stream larger than that loses its oldest entries rather than costing the whole
+report. A `collie` marker at the head of the stream says how many went. Testers who never
+kill the app are the ones who hit it — the entries nearest the bug always survive.
+
 For the panel's derived views to populate, network entries should carry these metadata
 keys: `method`, `url`, `status`, `durationMs`, `reqBytes`, `respBytes`, `error`,
 `requestBody`, `responseBody` (headers: `reqH.` / `respH.` prefixes); navigation

@@ -117,6 +117,12 @@ validation).
     nothing summarized or truncated — the panel derives its network/navigation views
     from that raw stream, so it must stay lossless. Collie adds its own `category: "collie"`
     markers at their chronological positions and changes nothing else.
+    The **one** exception is a hard platform limit, not a product decision:
+    `FirestoreTransport.trimEntries` drops the OLDEST entries when a stream exceeds what a
+    Firestore document can hold (1 MiB), because the alternative there is losing the whole
+    report — the tester's words and screenshot with it. It is never silent: a `collie`
+    marker heads the trimmed stream and `entriesTrimmed` counts it on the report document.
+    Nothing else may trim, and the HTTPS path never does.
   - The upload envelope is the backend's ingestion contract
     (`ReportEnvelopeBuilder`): `app` / `device` / `report` / `entries` / `telemetry`,
     ISO-8601 dates, and **no app key** (the backend resolves the app from the api-key).

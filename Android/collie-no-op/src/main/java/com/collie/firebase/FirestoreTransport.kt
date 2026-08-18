@@ -32,6 +32,7 @@ public class FirestoreTransport @JvmOverloads constructor(
         public val configCollection: String = "collie_config",
         public val maxDocumentBytes: Int = 900_000,
         public val maxScreenshotBytes: Int = 650_000,
+        public val maxEntriesBytes: Int = 900_000,
     )
 
     override suspend fun upload(

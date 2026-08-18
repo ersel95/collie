@@ -32,6 +32,8 @@ import FirebaseFirestore
 /// - `app`, `device`, `report`, `telemetry` — the envelope minus its stream, decoded from
 ///   JSON so the data is queryable in Firestore rather than an opaque blob.
 /// - `hasScreenshot` — whether `<screenshotCollection>/<reportID>` holds the image.
+/// - `entriesTrimmed` — how many log entries the stream lost to the size limit; absent
+///   when nothing was dropped, which is the normal case.
 /// - `status` — always `"new"`; the panel owns the lifecycle afterwards.
 /// - `createdAt` — server timestamp.
 ///
@@ -39,8 +41,12 @@ import FirebaseFirestore
 /// `appKey` is repeated there so the security rules can scope the collection without
 /// reading the parent document.
 ///
-/// The `entries` array is written **losslessly** wherever it lands: every category the host
-/// logged is kept, exactly as `ReportEnvelopeBuilder` produced it.
+/// The `entries` array is written **losslessly** wherever it lands — every category the host
+/// logged, exactly as `ReportEnvelopeBuilder` produced it — with one exception this
+/// transport cannot avoid: a stream larger than a Firestore document is trimmed from its
+/// OLDEST end (`trimEntries`) instead of costing the whole report. The trim is never
+/// silent: a `collie` marker entry heads the stream and `entriesTrimmed` counts it on the
+/// report document.
 public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
 
     /// Where reports and screenshots are written.
@@ -59,10 +65,16 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         /// Firestore document holding the remote kill switch
         /// (`<configCollection>/<appKey>` with a boolean `captureEnabled`).
         public var configCollection: String
-        /// Upper bound on a single Firestore document (Firestore's own hard limit is
-        /// 1 MiB). Envelopes above this are rejected as a permanent failure rather than
-        /// retried forever.
+        /// Upper bound on the REPORT document (Firestore's own hard limit is 1 MiB).
+        /// Measured after `entries` has been lifted out into its own document, because
+        /// that is what actually gets written here — measuring the whole envelope
+        /// rejected reports whose stream was never going to land in this document.
+        /// Above this the report is a permanent failure rather than retried forever.
         public var maxDocumentBytes: Int
+        /// Upper bound on the LOG-STREAM document, which has its own 1 MiB ceiling.
+        /// A stream above this is trimmed (oldest entries first) rather than rejected —
+        /// see `trimEntries`.
+        public var maxEntriesBytes: Int
         /// Upper bound on the RAW screenshot. base64 inflates by ~33%, so this must stay
         /// comfortably under `maxDocumentBytes`. A larger image is dropped and the report
         /// still goes — the text and logs matter more than the picture.
@@ -75,7 +87,8 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             entriesCollection: String = "collie_report_entries",
             configCollection: String = "collie_config",
             maxDocumentBytes: Int = 900_000,
-            maxScreenshotBytes: Int = 650_000
+            maxScreenshotBytes: Int = 650_000,
+            maxEntriesBytes: Int = 900_000
         ) {
             self.appKey = appKey
             self.collection = collection
@@ -84,6 +97,7 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             self.configCollection = configCollection
             self.maxDocumentBytes = maxDocumentBytes
             self.maxScreenshotBytes = maxScreenshotBytes
+            self.maxEntriesBytes = maxEntriesBytes
         }
     }
 
@@ -111,16 +125,32 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
     ) async -> CollieOperationResult<String> {
         // A malformed envelope can never succeed — fail permanently so the queue drops
         // it instead of retrying for 48 hours.
-        guard envelope.count <= configuration.maxDocumentBytes else {
-            return .permanentFailure(
-                "Report is too large for Firestore (\(envelope.count) bytes > \(configuration.maxDocumentBytes))"
-            )
-        }
         guard
             let parsed = try? JSONSerialization.jsonObject(with: envelope),
             var document = parsed as? [String: Any]
         else {
             return .permanentFailure("Could not decode the report envelope")
+        }
+
+        // The stream comes out FIRST, before anything is measured or written: it goes to
+        // its own document, so the report document's size must be judged without it.
+        // Measuring the whole envelope instead rejected reports that would have fit
+        // perfectly well — a long session's log stream is by far the largest part of an
+        // envelope, and none of it lands in the document this limit protects.
+        //
+        // Only an array is the stream this transport knows how to split and trim. Anything
+        // else stays where it is and travels inline, as it did before the split — the stream
+        // is what the analyst reads, so an unrecognised shape must not vanish.
+        let rawEntries = document["entries"] as? [Any]
+        if rawEntries != nil { document.removeValue(forKey: "entries") }
+
+        guard let documentBytes = Self.byteSize(of: document) else {
+            return .permanentFailure("Could not measure the report envelope")
+        }
+        guard documentBytes <= configuration.maxDocumentBytes else {
+            return .permanentFailure(
+                "Report is too large for Firestore (\(documentBytes) bytes > \(configuration.maxDocumentBytes))"
+            )
         }
 
         // 1. Screenshot first: if it fails transiently the whole report is retried, so the
@@ -151,11 +181,17 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         //    A permanent failure falls back to the old shape rather than dropping the logs.
         //    Rules that predate this collection reject the write permanently, and a report
         //    whose stream was silently discarded is worse than a large document: the stream
-        //    is what the analyst reads to reconstruct the bug. Size is not a concern in that
-        //    path — the envelope was already checked against `maxDocumentBytes` above, with
-        //    the entries inside it.
-        if let entries = document.removeValue(forKey: "entries") {
-            switch await putEntries(entries, reportID: reportID) {
+        //    is what the analyst reads to reconstruct the bug. That fallback has to fit the
+        //    report document's own budget, so the stream is trimmed a second time against
+        //    whatever room is left beside the report's own fields.
+        if let rawEntries {
+            let stream = Self.trimEntries(rawEntries, budget: configuration.maxEntriesBytes)
+            // Never trim silently: the marker entry says it inside the stream the analyst
+            // reads, and this field says it on the report itself.
+            if stream.dropped > 0 {
+                document["entriesTrimmed"] = stream.dropped
+            }
+            switch await putEntries(stream.value, reportID: reportID) {
             case .success:
                 // The write below merges, so an `entries` field left by an EARLIER attempt
                 // would survive it: a report queued by a build that wrote the stream inline
@@ -165,7 +201,19 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             case .transientFailure(let reason):
                 return .transientFailure(reason)
             case .permanentFailure:
-                document["entries"] = entries
+                // Trimmed from the ORIGINAL stream, not from the already-trimmed one: a
+                // second pass over its own output would drop the first marker and count it
+                // among the losses, so the report would report one entry more than it lost.
+                let inline = Self.trimEntries(
+                    rawEntries,
+                    budget: configuration.maxDocumentBytes - documentBytes
+                )
+                document["entries"] = inline.value
+                if inline.dropped > 0 {
+                    document["entriesTrimmed"] = inline.dropped
+                } else {
+                    document.removeValue(forKey: "entriesTrimmed")
+                }
             }
         }
 
@@ -259,6 +307,79 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         } catch {
             return Self.classify(error, action: "write the log entries")
         }
+    }
+
+    // MARK: - Size
+
+    /// Serialized size of a JSON value, or nil when it is not JSON at all.
+    ///
+    /// Firestore measures a document by its own field-by-field rule, not by its JSON
+    /// length; the two are close enough and the JSON form is the larger of the two
+    /// (quotes, commas, braces), so budgeting against it errs on the safe side.
+    static func byteSize(of value: Any) -> Int? {
+        try? JSONSerialization.data(
+            withJSONObject: value,
+            options: [.fragmentsAllowed, .withoutEscapingSlashes]
+        ).count
+    }
+
+    /// Room left for the marker entry that records what was dropped.
+    private static let trimMarkerReserve = 512
+
+    /// Trims the log stream to `budget` bytes by dropping the OLDEST entries first, and
+    /// prepends a marker entry saying how many went.
+    ///
+    /// Collie is lossless everywhere else, and that is deliberate: the panel derives its
+    /// network and navigation views from the raw stream. This is the one place a hard
+    /// platform limit overrides it. Firestore caps a document at 1 MiB, and the stream is
+    /// the part of a report that grows without bound — testers do not kill the app, so a
+    /// long session eventually carries more log than any document can hold. The choice
+    /// there is not "lossless or trimmed" but "trimmed or no report at all", tester's
+    /// words and screenshot included. So the tail survives: the entries nearest the bug
+    /// are the ones the analyst opened the report for.
+    ///
+    /// - Returns: the trimmed value and how many entries were dropped (`0` when it fit).
+    static func trimEntries(_ entries: Any, budget: Int) -> (value: Any, dropped: Int) {
+        guard let array = entries as? [Any] else { return (entries, 0) }
+
+        let allowance = max(0, budget - trimMarkerReserve)
+        // `[` + `]`; each entry after the first also costs its separating comma.
+        var used = 2
+        var firstKept = array.count
+        for index in stride(from: array.count - 1, through: 0, by: -1) {
+            guard let size = byteSize(of: array[index]) else { break }
+            let cost = size + 1
+            if used + cost > allowance { break }
+            used += cost
+            firstKept = index
+        }
+
+        let dropped = firstKept
+        guard dropped > 0 else { return (entries, 0) }
+
+        let kept = Array(array[firstKept...])
+        let marker: [String: Any] = [
+            "date": Self.markerDate(keptFirst: kept.first, droppedLast: array[firstKept - 1]),
+            "level": "warning",
+            "category": "collie",
+            "message": "Log stream trimmed — the oldest \(dropped) of \(array.count) entries "
+                + "were dropped to fit Firestore's document limit.",
+            "metadata": ["droppedEntries": String(dropped)],
+        ]
+        return ([marker] + kept, dropped)
+    }
+
+    /// Timestamp for the trim marker, so it sorts where the cut happened rather than at
+    /// an arbitrary point in the timeline the panel folds by.
+    private static func markerDate(keptFirst: Any?, droppedLast: Any) -> String {
+        if let entry = keptFirst as? [String: Any], let date = entry["date"] as? String {
+            return date
+        }
+        if let entry = droppedLast as? [String: Any], let date = entry["date"] as? String {
+            return date
+        }
+        let formatter = ISO8601DateFormatter()
+        return formatter.string(from: Date())
     }
 
     // MARK: - Error classification

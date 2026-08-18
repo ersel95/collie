@@ -84,9 +84,11 @@ public class FirestoreTransport @JvmOverloads constructor(
          */
         public val configCollection: String = "collie_config",
         /**
-         * Upper bound on a single Firestore document (Firestore's own hard limit is 1 MiB).
-         * Envelopes above this are rejected as a permanent failure rather than retried
-         * forever.
+         * Upper bound on the REPORT document (Firestore's own hard limit is 1 MiB).
+         * Measured after `entries` has been lifted out into its own document, because that
+         * is what actually gets written here — measuring the whole envelope rejected reports
+         * whose stream was never going to land in this document. Above this the report is a
+         * permanent failure rather than retried forever.
          */
         public val maxDocumentBytes: Int = 900_000,
         /**
@@ -95,6 +97,12 @@ public class FirestoreTransport @JvmOverloads constructor(
          * still goes — the text and logs matter more than the picture.
          */
         public val maxScreenshotBytes: Int = 650_000,
+        /**
+         * Upper bound on the LOG-STREAM document, which has its own 1 MiB ceiling. A stream
+         * above this is trimmed (oldest entries first) rather than rejected — see
+         * [trimEntries].
+         */
+        public val maxEntriesBytes: Int = 900_000,
     )
 
     // MARK: - ReportTransport
@@ -104,20 +112,41 @@ public class FirestoreTransport @JvmOverloads constructor(
         envelope: ByteArray,
         screenshot: ByteArray?,
     ): CollieOperationResult<String> {
-        // A malformed or oversized envelope can never succeed — fail permanently so the
-        // queue drops it instead of retrying for 48 hours.
-        if (envelope.size > configuration.maxDocumentBytes) {
+        // A malformed envelope can never succeed — fail permanently so the queue drops it
+        // instead of retrying for 48 hours.
+        //
+        // The stream comes out FIRST, before anything is measured or written: it goes to its
+        // own document, so the report document's size must be judged without it. Measuring
+        // the whole envelope instead rejected reports that would have fit perfectly well — a
+        // long session's log stream is by far the largest part of an envelope, and none of it
+        // lands in the document this limit protects.
+        val json = runCatching {
+            JSONObject(String(envelope, Charsets.UTF_8))
+        }.getOrElse { error ->
+            // Carry the reason: this is a permanent failure, so the queue drops the report and
+            // the tester's words are gone — a bare "could not decode" leaves nothing to debug.
             return CollieOperationResult.PermanentFailure(
-                "Report is too large for Firestore (${envelope.size} bytes > " +
+                "Could not decode the report envelope: ${error::class.java.simpleName}: ${error.message}",
+            )
+        }
+        // Only an array is the stream this transport knows how to split and trim. Anything
+        // else goes back where it came from and travels inline, as it did before the split —
+        // the stream is what the analyst reads, so an unrecognised shape must not vanish.
+        val removed = json.remove("entries")
+        val rawEntries = removed as? JSONArray
+        if (removed != null && rawEntries == null) json.put("entries", removed)
+
+        val documentBytes = json.toString().toByteArray(Charsets.UTF_8).size
+        if (documentBytes > configuration.maxDocumentBytes) {
+            return CollieOperationResult.PermanentFailure(
+                "Report is too large for Firestore ($documentBytes bytes > " +
                     "${configuration.maxDocumentBytes})",
             )
         }
 
         val document = runCatching {
-            JSONObject(String(envelope, Charsets.UTF_8)).toFirestoreMap()
+            json.toFirestoreMap()
         }.getOrElse { error ->
-            // Carry the reason: this is a permanent failure, so the queue drops the report and
-            // the tester's words are gone — a bare "could not decode" leaves nothing to debug.
             return CollieOperationResult.PermanentFailure(
                 "Could not decode the report envelope: ${error::class.java.simpleName}: ${error.message}",
             )
@@ -152,18 +181,39 @@ public class FirestoreTransport @JvmOverloads constructor(
         //    A permanent failure falls back to the old shape rather than dropping the logs.
         //    Rules that predate this collection reject the write permanently, and a report
         //    whose stream was silently discarded is worse than a large document: the stream is
-        //    what the analyst reads to reconstruct the bug. Size is not a concern in that path
-        //    — the envelope was already checked against `maxDocumentBytes` above, with the
-        //    entries inside it.
-        val entries = document.remove("entries")
-        if (entries != null) {
-            when (val result = putEntries(entries, reportId)) {
+        //    what the analyst reads to reconstruct the bug. That fallback has to fit the report
+        //    document's own budget, so the stream is trimmed a second time against whatever
+        //    room is left beside the report's own fields.
+        if (rawEntries != null) {
+            val stream = trimEntries(rawEntries, budget = configuration.maxEntriesBytes)
+            // Never trim silently: the marker entry says it inside the stream the analyst
+            // reads, and this field says it on the report itself.
+            if (stream.dropped > 0) document["entriesTrimmed"] = stream.dropped
+
+            when (val result = putEntries(stream.value.toFirestoreList(), reportId)) {
                 // The write below merges, so an `entries` field left by an EARLIER attempt
                 // would survive it: a report queued by a build that wrote the stream inline
                 // and retried after the app updated. Deleting the field keeps the report
                 // document small in that case too, and the stream is already safely written.
                 is CollieOperationResult.Success -> document["entries"] = FieldValue.delete()
-                is CollieOperationResult.PermanentFailure -> document["entries"] = entries
+
+                is CollieOperationResult.PermanentFailure -> {
+                    // Trimmed from the ORIGINAL stream, not from the already-trimmed one: a
+                    // second pass over its own output would drop the first marker and count
+                    // it among the losses, so the report would report one entry more than it
+                    // lost.
+                    val inline = trimEntries(
+                        rawEntries,
+                        budget = configuration.maxDocumentBytes - documentBytes,
+                    )
+                    document["entries"] = inline.value.toFirestoreList()
+                    if (inline.dropped > 0) {
+                        document["entriesTrimmed"] = inline.dropped
+                    } else {
+                        document.remove("entriesTrimmed")
+                    }
+                }
+
                 is CollieOperationResult.TransientFailure ->
                     return CollieOperationResult.TransientFailure(result.reason)
             }
@@ -310,6 +360,74 @@ public class FirestoreTransport @JvmOverloads constructor(
             }
             return result
         }
+        /** A log stream after [trimEntries], and how many entries it lost. */
+        internal data class TrimmedStream(val value: JSONArray, val dropped: Int)
+
+        /** Room left for the marker entry that records what was dropped. */
+        private const val TRIM_MARKER_RESERVE = 512
+
+        /**
+         * Trims the log stream to [budget] bytes by dropping the OLDEST entries first, and
+         * prepends a marker entry saying how many went.
+         *
+         * Collie is lossless everywhere else, and that is deliberate: the panel derives its
+         * network and navigation views from the raw stream. This is the one place a hard
+         * platform limit overrides it. Firestore caps a document at 1 MiB, and the stream is
+         * the part of a report that grows without bound — testers do not kill the app, so a
+         * long session eventually carries more log than any document can hold. The choice
+         * there is not "lossless or trimmed" but "trimmed or no report at all", tester's words
+         * and screenshot included. So the tail survives: the entries nearest the bug are the
+         * ones the analyst opened the report for.
+         *
+         * Must stay in step with the iOS implementation of the same name.
+         */
+        internal fun trimEntries(entries: JSONArray, budget: Int): TrimmedStream {
+            val allowance = maxOf(0, budget - TRIM_MARKER_RESERVE)
+            // `[` + `]`; each entry after the first also costs its separating comma.
+            var used = 2
+            var firstKept = entries.length()
+            for (index in entries.length() - 1 downTo 0) {
+                val size = entries.get(index).toString().toByteArray(Charsets.UTF_8).size
+                val cost = size + 1
+                if (used + cost > allowance) break
+                used += cost
+                firstKept = index
+            }
+
+            val dropped = firstKept
+            if (dropped == 0) return TrimmedStream(entries, 0)
+
+            val kept = JSONArray()
+            kept.put(
+                markerEntry(
+                    dropped = dropped,
+                    total = entries.length(),
+                    // The panel places its session fold by comparing timestamps, so a marker
+                    // stamped "now" would jump the timeline. It carries the timestamp of the
+                    // cut instead.
+                    date = timestampOf(entries.opt(firstKept)) ?: timestampOf(entries.opt(dropped - 1)),
+                ),
+            )
+            for (index in firstKept until entries.length()) kept.put(entries.get(index))
+            return TrimmedStream(kept, dropped)
+        }
+
+        private fun markerEntry(dropped: Int, total: Int, date: String?): JSONObject =
+            JSONObject().apply {
+                put("date", date ?: "")
+                put("level", "warning")
+                put("category", "collie")
+                put(
+                    "message",
+                    "Log stream trimmed — the oldest $dropped of $total entries were dropped " +
+                        "to fit Firestore's document limit.",
+                )
+                put("metadata", JSONObject().apply { put("droppedEntries", dropped.toString()) })
+            }
+
+        private fun timestampOf(entry: Any?): String? =
+            (entry as? JSONObject)?.optString("date")?.takeIf { it.isNotEmpty() }
+
         /**
          * Maps Firestore errors onto the queue's retry policy. Permission/argument problems
          * repeat forever, so they are permanent; everything else is worth another attempt

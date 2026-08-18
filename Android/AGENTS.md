@@ -58,6 +58,12 @@ changes:
 - **Lossless entries.** Every category the host provides is uploaded, unsummarised — the panel
   derives its network and navigation views from that raw stream. Collie adds its own
   `category = "collie"` markers at their chronological positions and changes nothing else.
+  The **one** exception is a hard platform limit, not a product decision:
+  `FirestoreTransport.trimEntries` drops the OLDEST entries when a stream exceeds what a
+  Firestore document can hold (1 MiB), because the alternative there is losing the whole report
+  — the tester's words and screenshot with it. Never silent: a `collie` marker heads the trimmed
+  stream and `entriesTrimmed` counts it on the report. It must stay in step with the iOS
+  implementation of the same name (`EntriesTrimTest` / `FirestoreTransportTrimTests`).
 - **The stream is its own Firestore document.** `entries` goes to
   `collie_report_entries/<reportId>`, never inside the report document — the panel lists reports
   by four fields and Firestore's web SDK cannot fetch a subset of a document, so a stream left

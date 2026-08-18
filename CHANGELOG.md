@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.17.0 — 2026-08-18
+
+### Fixed
+- **A long test session no longer costs the report.** On the Firebase path a report was
+  rejected outright — "Report is too large for Firestore (1003443 bytes > 900000)", a
+  *permanent* failure, so the queue dropped it and the tester's words, screenshot and logs
+  were gone — whenever the whole envelope crossed the document limit.
+
+  It was measuring the wrong thing. The log stream has had its own document since 1.15.0
+  (`collie_report_entries/<reportId>`), and the stream is by far the largest part of an
+  envelope; the check ran *before* it was lifted out, so a report whose actual document
+  was a few kilobytes was refused on account of data that was never going to be written
+  there. `maxDocumentBytes` now bounds the report document itself, measured after the
+  stream comes out.
+
+  Testers do not kill the app, so the stream grows all session and every device reached
+  this eventually — the report that surfaced it was three lines of Turkish about a
+  background colour.
+
+### Added
+- **A stream larger than a Firestore document is trimmed instead of lost.** The stream
+  document has its own 1 MiB ceiling, and past it the choice is not "lossless or trimmed"
+  but "trimmed or no report at all". So the **oldest** entries go and the tail survives —
+  the entries nearest the bug are the ones the report was filed for.
+
+  Never silently: a `collie` warning entry heads the trimmed stream ("the oldest N of M
+  entries were dropped…"), carrying the timestamp of the cut so the panel's session fold
+  still lands where it should, and `entriesTrimmed` counts the loss on the report document.
+
+  This is the one place Collie is not lossless, and it takes a hard platform limit to get
+  there: the HTTPS transport still uploads every entry, and `ReportEnvelopeBuilder` still
+  builds every entry into the envelope.
+
+- `FirestoreTransport.Configuration.maxEntriesBytes` (default `900_000`) — the stream
+  document's budget, alongside the existing `maxDocumentBytes` and `maxScreenshotBytes`.
+  A trailing parameter with a default, so existing call sites keep compiling.
+
+- Tests for the transport's pure parts (`CollieFirebaseTests`), which had none: the size
+  budgeting and the trim decide whether a report survives at all. Android 0.6.0 carries
+  the same fix and the same tests.
+
 ## 1.16.0 — 2026-08-14
 
 ### Added

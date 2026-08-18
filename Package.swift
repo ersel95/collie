@@ -54,6 +54,14 @@ let package = Package(
             name: "CollieTests",
             dependencies: ["Collie"],
             swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
+        ),
+        // Covers the pure parts of the Firestore transport — the size budgeting and the
+        // log-stream trim. Those decide whether a report survives at all, so they are not
+        // left to a compile check.
+        .testTarget(
+            name: "CollieFirebaseTests",
+            dependencies: ["CollieFirebase"],
+            swiftSettings: [.enableExperimentalFeature("StrictConcurrency")]
         )
     ]
 )

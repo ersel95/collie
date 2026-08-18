@@ -3,6 +3,39 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.6.0 — 2026-08-18
+
+### Fixed
+- **A long test session no longer costs the report** — the Android half of iOS 1.17.0, the
+  same bug in the same place. A report was rejected outright ("Report is too large for
+  Firestore (… bytes > 900000)") as a *permanent* failure, so the queue dropped it and the
+  tester's words, screenshot and logs went with it.
+
+  The check measured the whole envelope, including the log stream — which since 0.4.0 goes
+  to its own document (`collie_report_entries/<reportId>`) and is by far the largest part
+  of an envelope. `maxDocumentBytes` now bounds the report document itself, measured after
+  the stream is lifted out. The envelope is also parsed into `JSONObject` before it is
+  converted to Firestore maps, so the size is read off the JSON that actually ships.
+
+### Added
+- **A stream larger than a Firestore document is trimmed instead of lost.** The stream
+  document has its own 1 MiB ceiling, and past it the choice is not "lossless or trimmed"
+  but "trimmed or no report at all". The **oldest** entries go; the tail — the part nearest
+  the bug — survives.
+
+  Never silently: a `collie` warning entry heads the trimmed stream, carrying the timestamp
+  of the cut so the panel's session fold still lands where it should, and `entriesTrimmed`
+  counts the loss on the report document. `trimEntries` matches the iOS implementation of
+  the same name, entry for entry, because a report is the same document whichever device
+  filed it.
+
+- `FirestoreTransport.Configuration.maxEntriesBytes` (default `900_000`) — the stream
+  document's budget. Mirrored in the no-op artifact, in the same position: the host builds
+  the transport in one file shared by debug and release.
+
+- `EntriesTrimTest`, and `:collie-firebase:testDebugUnitTest` in CI — the Firestore module's
+  unit tests were never being run there, so `EnvelopeConversionTest` was skipped too.
+
 ## 0.5.0 — 2026-08-14
 
 ### Added

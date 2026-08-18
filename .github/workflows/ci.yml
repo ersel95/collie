@@ -55,7 +55,9 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
 
       - name: Run unit tests
-        run: ./gradlew :collie:testDebugUnitTest --no-daemon
+        # The Firestore transport's pure parts (envelope conversion, the log-stream trim)
+        # decide whether a report survives at all, so their tests run here too.
+        run: ./gradlew :collie:testDebugUnitTest :collie-firebase:testDebugUnitTest --no-daemon
 
       - name: Build everything, both ways
         run: |

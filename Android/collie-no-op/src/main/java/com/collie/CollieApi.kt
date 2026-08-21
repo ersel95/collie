@@ -202,6 +202,8 @@ public interface ReportTransport {
     ): CollieOperationResult<String>
 
     public suspend fun fetchRemoteConfig(): CollieRemoteConfig?
+
+    public val maxScreenshotBytes: Int? get() = null
 }
 
 public sealed interface CollieSubmitOutcome {

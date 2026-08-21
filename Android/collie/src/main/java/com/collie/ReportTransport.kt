@@ -68,4 +68,20 @@ public interface ReportTransport {
      * caller decides how to treat that (Collie fails *open* here, see [BugReportService]).
      */
     public suspend fun fetchRemoteConfig(): CollieRemoteConfig?
+
+    /**
+     * The largest a single screenshot may be for **this destination**, when the destination
+     * has a hard limit of its own. `null` (the default) means it has none worth declaring —
+     * an HTTPS backend enforces its own and answers 413.
+     *
+     * Without this the two limits do not know about each other, and that is not theoretical:
+     * [CollieConfiguration.maxScreenshotBytes] defaults to 4 MB, `FirestoreTransport` stores
+     * at most 650 KB — so the form compressed a photo to fit the first and the transport then
+     * **dropped** it for exceeding the second. Shake captures are small enough to hide it; the
+     * first image picked from a gallery is not.
+     *
+     * [BugReportService.maxScreenshotBytes] takes the strictest of local config, server value
+     * and this, so compression aims at a size the destination will actually accept.
+     */
+    public val maxScreenshotBytes: Int? get() = null
 }

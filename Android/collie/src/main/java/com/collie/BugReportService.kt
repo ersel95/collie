@@ -45,6 +45,12 @@ public class BugReportService internal constructor(
 
     private val transport: ReportTransport = transport ?: IngestionClient(configuration)
 
+    /**
+     * The destination's own screenshot limit, read once — a transport is fixed for the
+     * lifetime of the service.
+     */
+    private val transportMaxScreenshotBytes: Int? = this.transport.maxScreenshotBytes
+
     private val queue = UploadQueue(
         configuration = configuration,
         transport = this.transport,
@@ -156,18 +162,22 @@ public class BugReportService internal constructor(
     public val isCaptureEnabled: Boolean get() = remoteCaptureEnabled.get()
 
     /**
-     * Byte limit for **one** screenshot — the stricter of the local config and the server's
-     * value. A report carrying five images is bounded five times over, once per image,
-     * because each one travels in a document of its own.
+     * Byte limit for **one** screenshot: the strictest of the local config, the server's
+     * value, and whatever the transport says it can actually store. A report carrying five
+     * images is bounded five times over, once per image, because each one travels separately.
+     *
+     * The transport's limit belongs here rather than only at the transport, because this is
+     * the number the form compresses against. Leave it out and the two disagree: the image is
+     * encoded to fit 4 MB, then dropped for being over 650 KB — with the report going
+     * through, minus the picture.
      */
     public val maxScreenshotBytes: Int
         get() {
+            var limit = configuration.maxScreenshotBytes
             val remote = remoteMaxScreenshotBytes.get()
-            return if (remote <= 0) {
-                configuration.maxScreenshotBytes
-            } else {
-                minOf(configuration.maxScreenshotBytes, remote)
-            }
+            if (remote > 0) limit = minOf(limit, remote)
+            transportMaxScreenshotBytes?.let { limit = minOf(limit, it) }
+            return limit
         }
 
     /**

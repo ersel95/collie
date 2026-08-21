@@ -281,6 +281,7 @@ turns capture off.
 | "api-key is invalid or disabled (401)" | The api-key is wrong or was rotated — copy the current one from Admin · Apps |
 | HTTP 400 with a validation message | The payload was rejected (e.g. too many log entries). The message carries the backend's reason |
 | "Report is too large (413)" | Screenshot or log payload above the backend limit — lower `screenshotJPEGQuality` / `maxScreenshotBytes`, or `maxScreenshots` to carry fewer images |
+| "Screenshot N of M dropped: … exceeds the …-byte Firestore limit" | The image reached the transport larger than it can store. A custom transport with a hard limit must declare it via `ReportTransport.maxScreenshotBytes`, so the form compresses to that size instead of to `CollieConfiguration.maxScreenshotBytes` |
 | Screenshots missing in the panel, no error anywhere | `screenshotCount` and the `_<index>` document ids must be written together — the panel reads only the numbered ids once the count is present |
 | Report stuck at "queued" | Is the device on VPN? Try reaching the backend from Safari, then call `flushPendingUploads()` |
 | Collie's traffic visible in your network-capture tool | Not expected (separate session); still, add `captureExclusionFragments` to the exclude list |

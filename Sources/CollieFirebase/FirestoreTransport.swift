@@ -284,6 +284,10 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         }
     }
 
+    /// What this destination can actually store, so the form compresses to fit it rather
+    /// than to fit `CollieConfiguration.maxScreenshotBytes` and be dropped here.
+    public var maxScreenshotBytes: Int? { configuration.maxScreenshotBytes }
+
     public func fetchRemoteConfig() async -> CollieRemoteConfig? {
         do {
             let snapshot = try await firestore

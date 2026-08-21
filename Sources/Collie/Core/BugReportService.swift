@@ -11,6 +11,9 @@ public final class BugReportService: @unchecked Sendable {
     let configuration: CollieConfiguration
     private let transport: any ReportTransport
     private let queue: UploadQueue
+    /// The destination's own screenshot limit, read once — a transport is fixed for the
+    /// lifetime of the service.
+    private let transportMaxScreenshotBytes: Int?
 
     /// Server-side switches. Guarded by `stateLock`.
     private let stateLock = NSLock()
@@ -34,6 +37,7 @@ public final class BugReportService: @unchecked Sendable {
         self.configuration = configuration
         let effectiveTransport = transport ?? IngestionClient(configuration: configuration)
         self.transport = effectiveTransport
+        self.transportMaxScreenshotBytes = effectiveTransport.maxScreenshotBytes
         self.queue = UploadQueue(configuration: configuration, transport: effectiveTransport)
         self.sessions = sessions
     }
@@ -96,13 +100,21 @@ public final class BugReportService: @unchecked Sendable {
         return remoteCaptureEnabled
     }
 
-    /// Byte limit for **one** screenshot — the stricter of the local config and the
-    /// server's value. A report carrying five images is bounded five times over, once per
-    /// image, because each one travels in a document of its own.
+    /// Byte limit for **one** screenshot: the strictest of the local config, the server's
+    /// value, and whatever the transport says it can actually store. A report carrying five
+    /// images is bounded five times over, once per image, because each one travels
+    /// separately.
+    ///
+    /// The transport's limit belongs here rather than only at the transport, because this is
+    /// the number the form compresses against. Leave it out and the two disagree: the image
+    /// is encoded to fit 4 MB, then dropped for being over 650 KB — with the report going
+    /// through, minus the picture.
     public var maxScreenshotBytes: Int {
         stateLock.lock(); defer { stateLock.unlock() }
-        guard let remote = remoteMaxScreenshotBytes else { return configuration.maxScreenshotBytes }
-        return min(configuration.maxScreenshotBytes, remote)
+        var limit = configuration.maxScreenshotBytes
+        if let remote = remoteMaxScreenshotBytes { limit = min(limit, remote) }
+        if let destination = transportMaxScreenshotBytes { limit = min(limit, destination) }
+        return limit
     }
 
     /// How many screenshots a report may carry — the stricter of the local config and the

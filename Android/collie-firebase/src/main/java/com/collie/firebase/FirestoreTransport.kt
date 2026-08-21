@@ -282,6 +282,12 @@ public class FirestoreTransport @JvmOverloads constructor(
         }
     }
 
+    /**
+     * What this destination can actually store, so the form compresses to fit it rather than
+     * to fit [CollieConfiguration.maxScreenshotBytes] and be dropped here.
+     */
+    override val maxScreenshotBytes: Int get() = configuration.maxScreenshotBytes
+
     override suspend fun fetchRemoteConfig(): CollieRemoteConfig? = try {
         val snapshot = firestore.collection(configuration.configCollection)
             .document(configuration.appKey)

@@ -57,6 +57,16 @@ Android ships on its own version line (`android-*` tags); the iOS changelog is
   installed when the connection returns, and losing its image to an app update would be a
   silent loss of the thing the tester filed the report for.
 
+### Fixed
+- **An image picked from the gallery was uploaded too large and then dropped** — the Android
+  half of iOS 1.18.2, the same bug in the same place. The form compressed against
+  `CollieConfiguration.maxScreenshotBytes` (4 MB by default) while `FirestoreTransport` stores
+  at most 650 KB, and the two limits did not know about each other.
+
+  `ReportTransport.maxScreenshotBytes` (`null` by default) lets a destination declare its own
+  limit, and `BugReportService.maxScreenshotBytes` now takes the strictest of local config,
+  server value and destination.
+
 ## 0.6.0 — 2026-08-18
 
 ### Fixed

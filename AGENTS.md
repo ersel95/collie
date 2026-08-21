@@ -137,6 +137,13 @@ validation).
     anywhere. And the ceiling (`CollieConfiguration.maxScreenshotsLimit`, 5) is the panel's
     `MAX_SCREENSHOTS`: raising it here alone uploads images nobody can open.
     `maxScreenshotBytes` is per image, never a total — each one gets a document of its own.
+  - **The size the form compresses to is the size the destination accepts.** A transport with
+    a hard limit of its own declares it (`ReportTransport.maxScreenshotBytes`) and
+    `BugReportService.maxScreenshotBytes` takes the strictest of local config, server value
+    and that. The two used not to know about each other: the config defaults to 4 MB and
+    Firestore stores 650 KB, so a photo from the library was compressed to fit the first and
+    then dropped by the second — report through, picture gone. Shake captures are small
+    enough that nothing showed it.
   - Attaching an image uses `PHPickerViewController` (`ScreenshotPicker`), which runs out of
     process and therefore needs **no** photo-library permission. That is the same rule the
     telemetry permissions follow: Collie never raises a prompt, and a request without a usage

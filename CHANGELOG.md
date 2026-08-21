@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.18.2 — 2026-08-21
+
+### Fixed
+- **An image picked from the photo library was uploaded too large and then dropped.** The
+  form compressed against `CollieConfiguration.maxScreenshotBytes`, which defaults to 4 MB;
+  `FirestoreTransport` stores at most 650 KB and refuses anything above it. The two limits
+  did not know about each other, so a 2.4 MB photo passed the first, failed the second, and
+  the report arrived with `screenshotError: Screenshot 3 of 3 dropped: 2435161 bytes exceeds
+  the 650000-byte Firestore limit` and no picture.
+
+  Shake captures hid it — a rendered app screen compresses well under 650 KB — so it only
+  surfaced once a real photo could be attached.
+
+  A transport with a hard limit of its own now declares it (`ReportTransport.maxScreenshotBytes`,
+  `nil` by default so existing transports are unaffected), and
+  `BugReportService.maxScreenshotBytes` takes the **strictest** of local config, server value
+  and destination. Compression aims at a size the destination will actually accept: the same
+  two library photos now upload at 509 KB and 408 KB instead of 2.4 MB and 1.4 MB.
+
+Android 0.7.0 carries the same fix (still untagged).
+
 ## 1.18.1 — 2026-08-21
 
 ### Changed

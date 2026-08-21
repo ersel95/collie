@@ -247,9 +247,8 @@ final class BugReportBanner {
     }
 
     private func captureInScreenshotMode() {
-        guard let overlay = screenshotOverlay else { return }
-        let limit = maxScreenshots
-        guard draft.shots.count < limit else { return }
+        guard screenshotOverlay != nil else { return }
+        guard draft.shots.count < maxScreenshots else { return }
 
         // `ScreenRenderer` only ever draws windows below `.alert`, and this overlay sits
         // above that — so the bar and the shutter cannot appear in the image, and there is
@@ -264,14 +263,12 @@ final class BugReportBanner {
                 event: CollieScreenshotEvent(date: Date(), source: .captured)
             )
         )
-        overlay.flash()
-        overlay.setCount(draft.shots.count, of: limit)
 
-        // At the limit there is nothing more to do here, and leaving the tester in a mode
-        // whose only control is disabled reads as a bug. Back to the form.
-        if draft.shots.count >= limit {
-            leaveScreenshotMode()
-        }
+        // One tap, one picture, straight back to the report. Staying in the mode would mean
+        // the tester's only confirmation is a counter in the corner — they would have no
+        // idea *what* they just attached until they left. Coming back shows the thumbnail
+        // and puts the next capture one tap away, so a second screen costs nothing.
+        leaveScreenshotMode()
     }
 
     private func leaveScreenshotMode() {

@@ -40,8 +40,9 @@ Tester shakes the device
             sits on the keyboard
   → First Send on this device: an alert asks the tester's name, and says why
   → Tap a thumbnail → markup opens: circle the problem, Done
-  → [Screenshot] → the form steps aside: walk the app, tap the shutter on each
-                   screen worth reporting (up to 5 in all)
+  → [Screenshot] → the form steps aside: walk the app, tap the shutter on the
+                   screen worth reporting → straight back to the report
+                   (repeat until 5 images in all)
   → [Upload] → the same 5 slots, filled from the photo picker (no permission needed)
   → Backend: POST <reportsPath>  (multipart: report JSON + one part per screenshot,
                                   x-collie-api-key)
@@ -76,9 +77,9 @@ right person.
 - **Up to five images per report** — the shake-time capture, plus whatever the tester adds:
   the screen two steps back, the notification that started it, the other app the data came
   from. Two ways in, and neither asks for a permission: **screenshot mode**, where the form
-  steps aside and a shutter follows the tester through the app so they can photograph each
-  screen as they reach it, and the system **photo picker**. Any image can be marked up or
-  removed before sending.
+  steps aside and a shutter follows the tester through the app — one tap takes the picture
+  and hands the report straight back, so they see what they attached — and the system
+  **photo picker**. Any image can be marked up or removed before sending.
 - **Each picture lands on the timeline** — every image leaves a `collie` entry in the log
   stream at the moment it was taken ("Screenshot 2 captured"). Five screenshots taken minutes
   apart are otherwise a row of thumbnails beside a log that is stamped to the second.

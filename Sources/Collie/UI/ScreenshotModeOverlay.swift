@@ -12,7 +12,9 @@ import UIKit
 /// Two controls and nothing else on screen:
 /// - a **bar** across the top, so it is never ambiguous that the app is in a mode, and one
 ///   tap on it goes back to the form;
-/// - a **shutter** in the bottom-right corner, with the count beside it.
+/// - a **shutter** in the bottom-right corner, with the count beside it. One tap takes the
+///   picture and returns to the report — the tester sees what they attached instead of a
+///   counter ticking up, and the next capture is one tap away from there.
 ///
 /// Everything between them belongs to the host app: this view returns `nil` from `hitTest`
 /// for any point that is not one of its own controls, so the tester scrolls, taps and
@@ -79,20 +81,6 @@ final class ScreenshotModeOverlay: UIView {
         let isFull = count >= limit
         shutter.isEnabled = !isFull
         shutter.alpha = isFull ? 0.5 : 1
-    }
-
-    /// A brief flash over the whole screen, so a capture is unmistakable — the shutter is in
-    /// the corner and the screen itself does not change, so without this the tester cannot
-    /// tell a tap that worked from one that missed.
-    func flash() {
-        let flash = UIView(frame: bounds)
-        flash.backgroundColor = .white
-        flash.isUserInteractionEnabled = false
-        flash.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-        addSubview(flash)
-        UIView.animate(withDuration: 0.28, animations: { flash.alpha = 0 }) { _ in
-            flash.removeFromSuperview()
-        }
     }
 
     // MARK: - Subviews

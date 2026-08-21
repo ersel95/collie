@@ -226,7 +226,7 @@ failing the whole submission.
 A report carries **0 to 5 images**: the capture taken at shake time, plus whatever the tester
 adds in the form — from the system photo picker (which needs no permission; Collie never
 raises one), or in **screenshot mode**, where the form steps aside so they can walk back
-through the app and photograph each screen with one tap. Every image also leaves a `collie`
+through the app; one tap on the shutter takes the picture and returns to the report. Every image also leaves a `collie`
 entry in the log stream at the moment it was taken ("Screenshot 2 captured"), so the analyst
 can place each picture on the timeline instead of guessing.
 

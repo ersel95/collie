@@ -103,8 +103,10 @@ validation).
     (the secure-field mask depends on it).
   - **Screenshot mode** (`ScreenshotModeOverlay`) is the second way in, and it only works
     because the app underneath stays usable: the tester leaves the form, navigates the host
-    app, and taps a shutter on each screen worth reporting. Three things make that hold, and
-    all three have already been got wrong once:
+    app, and taps the shutter on the screen worth reporting. **One tap, one picture, back to
+    the report** — staying in the mode would leave a counter in the corner as the only
+    confirmation, so the tester would not know what they had attached until they left. Three
+    things make the mode hold, and all three have already been got wrong once:
     - `PassthroughWindow` returns `nil` from `hitTest` for a point nothing on Collie's layer
       wants. A `UIWindow` is a `UIView`, so without this it answers "mine" for every touch
       its content declined, and the app below is frozen — which is what the banner's

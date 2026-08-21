@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.18.1 — 2026-08-21
+
+### Changed
+- **Screenshot mode hands the report back after every capture.** It used to stay put, with a
+  counter in the corner as the only sign anything had happened — so the tester kept shooting
+  without seeing what they had actually attached, and found out only once they left the mode.
+  Now one tap takes the picture and returns to the report, thumbnail and all; the next screen
+  is one tap on **Screenshot** away.
+
+  The capture flash went with it. The form coming back *is* the confirmation, and the two
+  animations only fought each other.
+
 ## 1.18.0 — 2026-08-21
 
 ### Added

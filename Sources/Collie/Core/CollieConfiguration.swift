@@ -77,9 +77,16 @@ public struct CollieConfiguration: Sendable {
     /// Screenshot JPEG compression quality (0...1).
     public var screenshotJPEGQuality: Double
 
-    /// Upper bound allowed for the screenshot (bytes). Kept safely below the backend's
-    /// ingestion limit (default ~8 MB server-side).
+    /// Upper bound allowed for **each** screenshot (bytes). Kept safely below the
+    /// backend's ingestion limit (default ~8 MB server-side).
+    ///
+    /// A report may carry several images and each one travels in its own document/part,
+    /// so this bounds one image — never their total.
     public var maxScreenshotBytes: Int
+
+    /// How many screenshots one report may carry. Never above `maxScreenshotsLimit`;
+    /// lower it to give testers fewer slots.
+    public var maxScreenshots: Int
 
     // MARK: - Host bridges (optional)
 
@@ -108,6 +115,7 @@ public struct CollieConfiguration: Sendable {
         baseRetryDelay: TimeInterval = 5,
         screenshotJPEGQuality: Double = 0.7,
         maxScreenshotBytes: Int = 4 * 1_048_576,
+        maxScreenshots: Int = CollieConfiguration.maxScreenshotsLimit,
         logSnapshotProvider: (@Sendable () -> [CollieLogEntry])? = nil,
         sessionIDProvider: (@Sendable () -> String?)? = nil,
         diagnostics: (@Sendable (String) -> Void)? = nil
@@ -125,6 +133,7 @@ public struct CollieConfiguration: Sendable {
         self.baseRetryDelay = max(0, baseRetryDelay)
         self.screenshotJPEGQuality = min(1, max(0.1, screenshotJPEGQuality))
         self.maxScreenshotBytes = max(0, maxScreenshotBytes)
+        self.maxScreenshots = min(Self.maxScreenshotsLimit, max(0, maxScreenshots))
         self.logSnapshotProvider = logSnapshotProvider
         self.sessionIDProvider = sessionIDProvider
         self.diagnostics = diagnostics
@@ -140,6 +149,13 @@ public struct CollieConfiguration: Sendable {
 
     /// HTTP header carrying the ingestion api-key.
     public static let apiKeyHeader = "x-collie-api-key"
+
+    /// Hard ceiling on how many screenshots a report may carry.
+    ///
+    /// The analyst panel reads `<reportId>_0 … <reportId>_4` and stops there, so a sixth
+    /// image would upload and never be shown. The number is a shared contract with the
+    /// panel: raising it here alone captures images nobody ever sees.
+    public static let maxScreenshotsLimit = 5
 
     // MARK: - Validation (fail-closed)
 

@@ -102,12 +102,27 @@ changes:
   tell "never asked" from "declined" outside an Activity, so there is no `notDetermined` here
   where iOS has one. Reading a grant is not reading the data behind it: no coordinate, no photo,
   no PII.
+- **Screenshots: count and id travel together.** A report carries 0 to 5 images — the
+  shake-time capture plus whatever the tester attaches. `screenshotCount` on the report
+  document and the `_<index>`-suffixed ids in `collie_report_screenshots` are ONE contract
+  with the panel: it switches shapes on the count, then reads only the numbered ids, so
+  writing one without the other hides every image with no error anywhere. The ceiling
+  (`CollieConfiguration.MAX_SCREENSHOTS_LIMIT`, 5) is the panel's `MAX_SCREENSHOTS` and must
+  equal the iOS SDK's `maxScreenshotsLimit`; `maxScreenshotBytes` bounds each image, never
+  their total, because each one gets a document of its own.
+- **Adding an image raises no permission prompt.** The form uses the system photo picker
+  (`ActivityResultContracts.PickVisualMedia`), which runs outside the app and grants access
+  only to the items the tester chose — `READ_MEDIA_IMAGES` is never needed, and Collie's
+  manifest, which merges into the host's, still declares no storage permission. Same rule as
+  the telemetry permissions: read, never request.
 - **`FLAG_SECURE` is honoured.** `PixelCopy` is not attempted on a secure window; the fallback
   draws the view hierarchy. Do not add a path around this.
 - **Markup replaces the image.** `MarkupEditor` hands back a complete replacement bitmap,
-  flattened at the screenshot's native pixel size, or `null` on cancel. Nothing downstream knows
-  markup exists — marks a tester draws to hide something must never travel separately from the
-  pixels they cover. The display scale is what maps stroke coordinates back to full resolution;
+  flattened at the screenshot's native pixel size, or `null` on cancel. It replaces the one
+  image it was opened for, addressed by id rather than by position — the tester can remove a
+  thumbnail while another is being marked up, and an index would then write the result onto the
+  wrong picture. Nothing downstream knows markup exists — marks a tester draws to hide something
+  must never travel separately from the pixels they cover. The display scale is what maps stroke coordinates back to full resolution;
   get it wrong and the marks land somewhere else in the uploaded image.
 - **Core stays log-source agnostic.** No logging-library types or names in `collie/src` — concrete
   bridges live in the example and in the docs.

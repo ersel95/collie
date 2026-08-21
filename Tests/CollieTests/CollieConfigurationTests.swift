@@ -132,6 +132,28 @@ final class CollieConfigurationTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(config.screenshotJPEGQuality, 0.1)
     }
 
+    /// The panel reads a fixed number of screenshot slots, so the SDK must never capture
+    /// past it — an image beyond the ceiling would upload and never be displayed.
+    func testScreenshotCountClampedToTheSharedCeiling() {
+        let above = CollieConfiguration(
+            apiBaseURL: URL(string: "https://x.example.com")!,
+            maxScreenshots: 50
+        )
+        XCTAssertEqual(above.maxScreenshots, CollieConfiguration.maxScreenshotsLimit)
+
+        let below = CollieConfiguration(
+            apiBaseURL: URL(string: "https://x.example.com")!,
+            maxScreenshots: 2
+        )
+        XCTAssertEqual(below.maxScreenshots, 2, "a host may still ask for fewer")
+
+        let negative = CollieConfiguration(
+            apiBaseURL: URL(string: "https://x.example.com")!,
+            maxScreenshots: -1
+        )
+        XCTAssertEqual(negative.maxScreenshots, 0)
+    }
+
     func testNegativeRetrySettingsClamped() {
         let config = CollieConfiguration(
             apiBaseURL: URL(string: "https://x.example.com")!,

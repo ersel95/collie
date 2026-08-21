@@ -11,8 +11,10 @@ Tester shakes the device
   → ShakeDetector fires; the screen is captured (FLAG_SECURE windows are respected)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
   → [Yes] → Form: "What happened?" (+ name on first use)
-  → Tap the screenshot → markup opens: circle the problem, Done
-  → Backend: POST <reportsPath>  (multipart: report JSON + screenshot, x-collie-api-key)
+  → Tap a screenshot → markup opens: circle the problem, Done
+  → [+] attaches up to 5 images in all, from the photo picker (no permission needed)
+  → Backend: POST <reportsPath>  (multipart: report JSON + one part per screenshot,
+                                  x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff
   → Panel: analyst triages the report and pushes it to Jira
 ```

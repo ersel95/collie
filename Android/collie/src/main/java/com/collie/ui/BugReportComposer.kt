@@ -12,7 +12,7 @@ import java.io.ByteArrayOutputStream
 import kotlin.math.roundToInt
 
 /**
- * Bridge that gathers the fields from the report screen + the captured screenshot +
+ * Bridge that gathers the fields from the report screen + the screenshots it holds +
  * device/app meta and hands them to `Collie`'s `BugReportService`.
  *
  * The log snapshot (the host's `logSnapshotProvider`) is collected on the service side;
@@ -20,18 +20,27 @@ import kotlin.math.roundToInt
  */
 internal object BugReportComposer {
 
-    /** Sends the report. */
+    /**
+     * Sends the report.
+     *
+     * @param screenshots In the order the form holds them; the transport keeps that order,
+     *   so it is the order the analyst sees.
+     */
     suspend fun send(
         context: Context,
         whatHappened: String,
         testerName: String?,
-        screenshot: Bitmap?,
+        screenshots: List<Bitmap>,
     ): CollieSubmitOutcome {
         val service = Collie.bugReportService
             ?: return CollieSubmitOutcome.Rejected("Collie is not configured")
 
-        val jpeg = screenshot?.let {
-            withContext(Dispatchers.Default) {
+        // Per image, not for all of them together: each one is uploaded on its own, so
+        // attaching a fifth must not shrink the first four. The form already stops at the
+        // limit; capping again here means a caller that does not (a host driving the service
+        // directly) cannot exceed what the panel displays.
+        val jpegs = withContext(Dispatchers.Default) {
+            screenshots.take(service.maxScreenshots).mapNotNull {
                 encodeJpeg(it, service.screenshotJpegQuality, service.maxScreenshotBytes)
             }
         }
@@ -44,16 +53,16 @@ internal object BugReportComposer {
         return service.sendReport(
             whatHappened = whatHappened,
             testerName = testerName,
-            screenshotJpeg = jpeg,
+            screenshotsJpeg = jpegs,
             identity = identity,
             telemetry = telemetry,
         )
     }
 
     /**
-     * Compresses to JPEG; when [maxBytes] is exceeded, first lowers quality, then scales the
-     * image down. A report whose screenshot is slightly softer still tells the story; one
-     * rejected for size tells nothing.
+     * Compresses ONE image to JPEG; when [maxBytes] is exceeded, first lowers quality, then
+     * scales the image down. A report whose screenshot is slightly softer still tells the
+     * story; one rejected for size tells nothing.
      */
     internal fun encodeJpeg(bitmap: Bitmap, quality: Double, maxBytes: Int): ByteArray? {
         var currentQuality = (quality * 100).roundToInt().coerceIn(10, 100)

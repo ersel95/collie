@@ -42,13 +42,20 @@ internal class IngestionClient(
     // MARK: - Report upload
 
     /**
-     * `POST <reportsPath>` — multipart with a `report` JSON part and an optional
-     * `screenshot` binary part. Part names are the backend contract.
+     * `POST <reportsPath>` — multipart with a `report` JSON part and one binary part per
+     * screenshot. Part names are the backend contract.
+     *
+     * **The first image keeps the name it always had** — `screenshot` / `screenshot.jpg` —
+     * and any further one is appended as `screenshot[i]` / `screenshot<i>.jpg`, numbered
+     * from 1. A single-image report is therefore byte-for-byte the request every deployed
+     * backend already parses, and one that knows nothing about the extra parts still
+     * receives the capture the tester started from instead of nothing at all. The scheme
+     * matches the iOS SDK's and is documented in `INTEGRATION.md`.
      */
     override suspend fun upload(
         reportId: String,
         envelope: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): CollieOperationResult<String> {
         val body = MultipartBody.Builder()
             .setType(MultipartBody.FORM)
@@ -58,10 +65,12 @@ internal class IngestionClient(
                 envelope.toRequestBody(JSON_MEDIA_TYPE),
             )
             .apply {
-                if (screenshot != null && screenshot.isNotEmpty()) {
+                // Filtered before numbering: an empty image must not consume index 0 and
+                // leave the request without the part every backend looks for.
+                screenshots.filter { it.isNotEmpty() }.forEachIndexed { index, screenshot ->
                     addFormDataPart(
-                        "screenshot",
-                        "screenshot.jpg",
+                        if (index == 0) "screenshot" else "screenshot[$index]",
+                        if (index == 0) "screenshot.jpg" else "screenshot$index.jpg",
                         screenshot.toRequestBody(JPEG_MEDIA_TYPE),
                     )
                 }
@@ -117,6 +126,11 @@ internal class IngestionClient(
                 captureEnabled = json.optBoolean("captureEnabled", true),
                 maxScreenshotBytes = if (json.has("maxScreenshotBytes")) {
                     json.optInt("maxScreenshotBytes").takeIf { it > 0 }
+                } else {
+                    null
+                },
+                maxScreenshots = if (json.has("maxScreenshots")) {
+                    json.optInt("maxScreenshots").takeIf { it > 0 }
                 } else {
                     null
                 },

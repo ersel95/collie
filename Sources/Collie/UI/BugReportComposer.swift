@@ -1,7 +1,7 @@
 #if canImport(UIKit)
 import UIKit
 
-/// Bridge that gathers the 2 fields from the report sheet + the captured screenshot +
+/// Bridge that gathers the 2 fields from the report sheet + the screenshots it holds +
 /// device/app meta and hands them to `Collie`'s `BugReportService`.
 ///
 /// The log snapshot (the host's `logSnapshotProvider`) is collected on the service side;
@@ -10,18 +10,36 @@ import UIKit
 enum BugReportComposer {
 
     /// Sends the report.
+    ///
+    /// - Parameter shots: In the order the form holds them; the transport keeps that order,
+    ///   so it is the order the analyst sees. Each one carries its own capture event, which
+    ///   is why they travel as pairs rather than as two lists: an image that fails to encode
+    ///   must take its marker with it, or the stream announces "screenshot 3 captured"
+    ///   beside two pictures and sends the analyst looking for one that never arrived.
     static func send(
         whatHappened: String,
         testerName: String?,
-        screenshot: UIImage?
+        shots: [BugReportShot]
     ) async -> CollieSubmitOutcome {
         guard let service = Collie.bugReportService else {
             return .rejected("Collie is not configured")
         }
 
         let quality = service.screenshotJPEGQuality
+        // Per image, not for all of them together: each one is uploaded on its own, so
+        // attaching a fifth must not shrink the first four.
         let maxBytes = service.maxScreenshotBytes
-        let jpeg = screenshot.flatMap { encodeJPEG($0, quality: quality, maxBytes: maxBytes) }
+        // The form already stops at the limit; capping again here means a caller that does
+        // not (a host driving the service directly) cannot exceed what the panel displays.
+        var jpegs: [Data] = []
+        var events: [CollieScreenshotEvent] = []
+        for shot in shots.prefix(service.maxScreenshots) {
+            guard let data = encodeJPEG(shot.image, quality: quality, maxBytes: maxBytes) else {
+                continue
+            }
+            jpegs.append(data)
+            events.append(shot.event)
+        }
 
         let identity = CollieDeviceIdentity.current()
         // Capture the point-in-time device state (battery/network/thermal/disk/memory…)
@@ -31,13 +49,15 @@ enum BugReportComposer {
         return await service.sendReport(
             whatHappened: whatHappened,
             testerName: testerName,
-            screenshotJPEG: jpeg,
+            screenshotsJPEG: jpegs,
+            screenshotEvents: events,
             identity: identity,
             telemetry: telemetry
         )
     }
 
-    /// Compresses to JPEG; when `maxBytes` is exceeded, gradually lowers quality/size.
+    /// Compresses ONE image to JPEG; when `maxBytes` is exceeded, gradually lowers
+    /// quality/size.
     static func encodeJPEG(_ image: UIImage, quality: Double, maxBytes: Int) -> Data? {
         var currentQuality = CGFloat(quality)
         var data = image.jpegData(compressionQuality: currentQuality)

@@ -163,10 +163,14 @@ enum KeychainStore {
         ]
         var item: CFTypeRef?
         let status = SecItemCopyMatching(query as CFDictionary, &item)
-        guard status == errSecSuccess, let data = item as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        if status == errSecSuccess, let data = item as? Data,
+           let value = String(data: data, encoding: .utf8) {
+            return value
+        }
+        // Written by the fallback above, on a build the Keychain will not serve.
+        return UserDefaults.standard.string(forKey: fallbackKey(account))
         #else
-        return UserDefaults.standard.string(forKey: service + "." + account)
+        return UserDefaults.standard.string(forKey: fallbackKey(account))
         #endif
     }
 
@@ -182,9 +186,27 @@ enum KeychainStore {
         var attributes = query
         attributes[kSecValueData as String] = data
         attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(attributes as CFDictionary, nil)
+        let status = SecItemAdd(attributes as CFDictionary, nil)
+        guard status != errSecSuccess else { return }
+
+        // The Keychain refused it. That is not hypothetical: it needs an entitlement, and a
+        // build without one (an unsigned test harness, some enterprise re-signing setups)
+        // gets `errSecMissingEntitlement` — silently, because nothing here used to read the
+        // status. The visible symptom is a tester being asked their name on every single
+        // report, forever, which reads as a bug in the reporter rather than a missing
+        // entitlement.
+        //
+        // So fall back to `UserDefaults`. It is strictly worse — it is wiped on reinstall,
+        // which is the reason the Keychain is preferred — but "asked again after a
+        // reinstall" beats "asked again every time".
+        Collie.diag("Keychain write failed (OSStatus \(status)) — falling back to UserDefaults for \(account).")
+        UserDefaults.standard.set(value, forKey: fallbackKey(account))
         #else
-        UserDefaults.standard.set(value, forKey: service + "." + account)
+        UserDefaults.standard.set(value, forKey: fallbackKey(account))
         #endif
+    }
+
+    private static func fallbackKey(_ account: String) -> String {
+        service + "." + account
     }
 }

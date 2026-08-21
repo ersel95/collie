@@ -102,10 +102,19 @@ public class CollieConfiguration(
     public val screenshotJpegQuality: Double = 0.7,
 
     /**
-     * Upper bound allowed for the screenshot (bytes). Kept safely below the backend's
+     * Upper bound allowed for **each** screenshot (bytes). Kept safely below the backend's
      * ingestion limit (default ~8 MB server-side).
+     *
+     * A report may carry several images and each one travels in its own document/part, so
+     * this bounds one image — never their total.
      */
     public val maxScreenshotBytes: Int = 4 * 1_048_576,
+
+    /**
+     * How many screenshots one report may carry. Never above [MAX_SCREENSHOTS_LIMIT];
+     * lower it to give testers fewer slots.
+     */
+    public val maxScreenshots: Int = MAX_SCREENSHOTS_LIMIT,
 
     // MARK: - Host bridges (optional)
 
@@ -130,10 +139,17 @@ public class CollieConfiguration(
         require(maxRetryCount >= 0) { "maxRetryCount cannot be negative" }
         require(baseRetryDelayMillis >= 0) { "baseRetryDelayMillis cannot be negative" }
         require(maxScreenshotBytes >= 0) { "maxScreenshotBytes cannot be negative" }
+        require(maxScreenshots >= 0) { "maxScreenshots cannot be negative" }
     }
 
     /** Clamped to the range the JPEG encoder accepts, matching the iOS SDK. */
     public val effectiveJpegQuality: Double = screenshotJpegQuality.coerceIn(0.1, 1.0)
+
+    /**
+     * Clamped to the ceiling the analyst panel is built around, matching the iOS SDK. A
+     * host asking for more would only capture images the panel never displays.
+     */
+    public val effectiveMaxScreenshots: Int = maxScreenshots.coerceIn(0, MAX_SCREENSHOTS_LIMIT)
 
     // MARK: - Validation (fail-closed)
 
@@ -196,5 +212,15 @@ public class CollieConfiguration(
 
         /** HTTP header carrying the ingestion api-key. */
         public const val API_KEY_HEADER: String = "x-collie-api-key"
+
+        /**
+         * Hard ceiling on how many screenshots a report may carry.
+         *
+         * The analyst panel reads `<reportId>_0 … <reportId>_4` and stops there, so a sixth
+         * image would upload and never be shown. The number is a shared contract with the
+         * panel and with the iOS SDK's `CollieConfiguration.maxScreenshotsLimit`: raising it
+         * here alone captures images nobody ever sees.
+         */
+        public const val MAX_SCREENSHOTS_LIMIT: Int = 5
     }
 }

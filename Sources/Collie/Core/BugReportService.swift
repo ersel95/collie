@@ -16,6 +16,7 @@ public final class BugReportService: @unchecked Sendable {
     private let stateLock = NSLock()
     private var remoteCaptureEnabled = true
     private var remoteMaxScreenshotBytes: Int?
+    private var remoteMaxScreenshots: Int?
 
     /// Logical sessions, the persistent report counters, and the session markers that go
     /// into `entries`. See `CollieSessionTracker`.
@@ -81,6 +82,11 @@ public final class BugReportService: @unchecked Sendable {
         stateLock.lock(); defer { stateLock.unlock() }
         remoteCaptureEnabled = config.captureEnabled
         remoteMaxScreenshotBytes = config.maxScreenshotBytes.flatMap { $0 > 0 ? $0 : nil }
+        // Clamped on the way in: the panel reads a fixed number of slots, so a server
+        // value above the ceiling would only capture images it will never display.
+        remoteMaxScreenshots = config.maxScreenshots.flatMap {
+            $0 > 0 ? min($0, CollieConfiguration.maxScreenshotsLimit) : nil
+        }
     }
 
     /// Is capture currently active? Two gates: the local build-time opt-in (this service
@@ -90,11 +96,22 @@ public final class BugReportService: @unchecked Sendable {
         return remoteCaptureEnabled
     }
 
-    /// Screenshot byte limit — the stricter of the local config and the server's value.
+    /// Byte limit for **one** screenshot — the stricter of the local config and the
+    /// server's value. A report carrying five images is bounded five times over, once per
+    /// image, because each one travels in a document of its own.
     public var maxScreenshotBytes: Int {
         stateLock.lock(); defer { stateLock.unlock() }
         guard let remote = remoteMaxScreenshotBytes else { return configuration.maxScreenshotBytes }
         return min(configuration.maxScreenshotBytes, remote)
+    }
+
+    /// How many screenshots a report may carry — the stricter of the local config and the
+    /// server's value, never above `CollieConfiguration.maxScreenshotsLimit`. The form
+    /// stops offering to add one at this number.
+    public var maxScreenshots: Int {
+        stateLock.lock(); defer { stateLock.unlock() }
+        guard let remote = remoteMaxScreenshots else { return configuration.maxScreenshots }
+        return min(configuration.maxScreenshots, remote)
     }
 
     /// JPEG compression quality.
@@ -112,19 +129,25 @@ public final class BugReportService: @unchecked Sendable {
 
     /// Sends the report to the Collie backend: one multipart upload carrying the JSON
     /// envelope (app/device/report meta + **all** log entries + telemetry) and the
-    /// screenshot. Triage and the eventual Jira issue happen in the analyst panel.
+    /// screenshots. Triage and the eventual Jira issue happen in the analyst panel.
     ///
     /// - Parameters:
     ///   - whatHappened: The "What happened?" field.
     ///   - testerName: Name entered on the first submission (stored afterwards); when
     ///     nil, the stored name is used.
-    ///   - screenshotJPEG: The screenshot pre-compressed to JPEG (binary).
+    ///   - screenshotsJPEG: The screenshots pre-compressed to JPEG (binary), in the order
+    ///     the tester arranged them. Empty when the report carries no image.
+    ///   - screenshotEvents: When each of those images was taken, in the same order. Each
+    ///     one becomes a `collie` marker in the log stream, so the analyst can see where in
+    ///     the timeline a picture was taken instead of guessing. Empty is allowed — a host
+    ///     driving the service directly need not track it.
     ///   - identity: Device identity (collected by the UI on the MainActor).
     @discardableResult
     public func sendReport(
         whatHappened: String,
         testerName: String?,
-        screenshotJPEG: Data?,
+        screenshotsJPEG: [Data],
+        screenshotEvents: [CollieScreenshotEvent] = [],
         identity: CollieDeviceIdentity,
         telemetry: CollieTelemetry? = nil
     ) async -> CollieSubmitOutcome {
@@ -145,9 +168,19 @@ public final class BugReportService: @unchecked Sendable {
         // timeline shows where this session began, where it resumed after a long
         // background, and where the previous report was filed.
         let hostEntries = configuration.logSnapshotProvider?() ?? []
+        // The screenshot markers travel with the session markers: same category, same
+        // chronological insertion, so "screenshot 2 captured" lands between the two log
+        // lines it happened between rather than at the end of the stream.
+        //
+        // Trimmed to the images that are actually being sent — an event without an image
+        // would advertise a picture the analyst cannot open.
+        let markers = CollieSessionTracker.markerEntries(for: stamp)
+            + CollieScreenshotEvent.markerEntries(
+                for: Array(screenshotEvents.prefix(screenshotsJPEG.count))
+            )
         let entries = CollieSessionTracker.merge(
             hostEntries: hostEntries,
-            markers: CollieSessionTracker.markerEntries(for: stamp)
+            markers: markers
         )
         let sessionID = configuration.sessionIDProvider?() ?? ""
 
@@ -169,7 +202,7 @@ public final class BugReportService: @unchecked Sendable {
             return .rejected("Could not build the report envelope")
         }
 
-        return await queue.submit(reportBody: reportBody, screenshot: screenshotJPEG)
+        return await queue.submit(reportBody: reportBody, screenshots: screenshotsJPEG)
     }
 
     func diag(_ message: String) {

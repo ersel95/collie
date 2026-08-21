@@ -58,6 +58,7 @@ public class BugReportService internal constructor(
     /** Server-side switches. */
     private val remoteCaptureEnabled = AtomicBoolean(true)
     private val remoteMaxScreenshotBytes = AtomicInteger(0)
+    private val remoteMaxScreenshots = AtomicInteger(0)
 
     /**
      * Logical sessions, the persistent report counters, and the session markers that go into
@@ -135,6 +136,14 @@ public class BugReportService internal constructor(
         }
         remoteCaptureEnabled.set(config.captureEnabled)
         remoteMaxScreenshotBytes.set(config.maxScreenshotBytes?.takeIf { it > 0 } ?: 0)
+        // Clamped on the way in: the panel reads a fixed number of slots, so a server value
+        // above the ceiling would only capture images it will never display.
+        remoteMaxScreenshots.set(
+            config.maxScreenshots
+                ?.takeIf { it > 0 }
+                ?.coerceAtMost(CollieConfiguration.MAX_SCREENSHOTS_LIMIT)
+                ?: 0,
+        )
         if (!config.captureEnabled) {
             diag("Capture is disabled server-side for this app (kill switch).")
         }
@@ -146,7 +155,11 @@ public class BugReportService internal constructor(
      */
     public val isCaptureEnabled: Boolean get() = remoteCaptureEnabled.get()
 
-    /** Screenshot byte limit — the stricter of the local config and the server's value. */
+    /**
+     * Byte limit for **one** screenshot — the stricter of the local config and the server's
+     * value. A report carrying five images is bounded five times over, once per image,
+     * because each one travels in a document of its own.
+     */
     public val maxScreenshotBytes: Int
         get() {
             val remote = remoteMaxScreenshotBytes.get()
@@ -154,6 +167,21 @@ public class BugReportService internal constructor(
                 configuration.maxScreenshotBytes
             } else {
                 minOf(configuration.maxScreenshotBytes, remote)
+            }
+        }
+
+    /**
+     * How many screenshots a report may carry — the stricter of the local config and the
+     * server's value, never above [CollieConfiguration.MAX_SCREENSHOTS_LIMIT]. The form
+     * stops offering to add one at this number.
+     */
+    public val maxScreenshots: Int
+        get() {
+            val remote = remoteMaxScreenshots.get()
+            return if (remote <= 0) {
+                configuration.effectiveMaxScreenshots
+            } else {
+                minOf(configuration.effectiveMaxScreenshots, remote)
             }
         }
 
@@ -175,18 +203,19 @@ public class BugReportService internal constructor(
 
     /**
      * Sends the report: one upload carrying the JSON envelope (app/device/report meta +
-     * **all** log entries + telemetry) and the screenshot. Triage and the eventual Jira
+     * **all** log entries + telemetry) and the screenshots. Triage and the eventual Jira
      * issue happen in the analyst panel.
      *
      * @param whatHappened The "What happened?" field.
      * @param testerName Name entered on the first submission (stored afterwards); when
      *   `null`, the stored name is used.
-     * @param screenshotJpeg The screenshot pre-compressed to JPEG (binary).
+     * @param screenshotsJpeg The screenshots pre-compressed to JPEG (binary), in the order
+     *   the tester arranged them. Empty when the report carries no image.
      */
     public suspend fun sendReport(
         whatHappened: String,
         testerName: String?,
-        screenshotJpeg: ByteArray?,
+        screenshotsJpeg: List<ByteArray>,
         identity: CollieDeviceIdentity,
         telemetry: CollieTelemetry? = null,
     ): CollieSubmitOutcome {
@@ -229,7 +258,7 @@ public class BugReportService internal constructor(
             ReportEnvelopeBuilder.makeBody(configuration = configuration, context = context)
         }.getOrNull() ?: return CollieSubmitOutcome.Rejected("Could not build the report envelope")
 
-        return queue.submit(reportBody = reportBody, screenshot = screenshotJpeg).also { outcome ->
+        return queue.submit(reportBody = reportBody, screenshots = screenshotsJpeg).also { outcome ->
             if (outcome is CollieSubmitOutcome.Queued) pendingUploadScheduler.schedule()
         }
     }

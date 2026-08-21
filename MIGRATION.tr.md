@@ -86,10 +86,15 @@ Sıra önemli. Panelin keşfettiği şey rapor dokümanı; henüz yazılmamış 
 etmemeli. Ekran görüntüsünde de aynı sıra geçerli.
 
 ```
-1. collie_report_screenshots/{reportId} yaz   (varsa)
-2. collie_report_entries/{reportId} yaz       ← yeni
-3. collie_reports/{reportId} yaz              (`entries` olmadan)
+1. collie_report_screenshots/{reportId}_0 … _{n-1} yaz   (görüntü başına bir doküman)
+2. collie_report_entries/{reportId} yaz                  ← yeni
+3. collie_reports/{reportId} yaz                         (`entries` olmadan)
 ```
+
+Ekran görüntüsü id'leri yalnızca `screenshotCount` da gönderiyorsanız sonek alır — aşağıdaki
+[çoklu ekran görüntüsü](#i̇steğe-bağlı-çoklu-ekran-görüntüsü) bölümüne bakın. Tek görüntü
+göndermeye devam ediyorsanız soneksiz `collie_report_screenshots/{reportId}` ve sayı alanının
+hiç olmaması panelin en baştan beri okuduğu şekildir; desteklenmeye devam ediyor.
 
 2. adım **geçici** bir hatayla başarısız olursa (offline, timeout, unavailable) tüm raporu
 sonra tekrar deneyin — rapor dokümanını yazmayın. **Kalıcı** bir hatayla başarısız olursa
@@ -145,13 +150,59 @@ Backfill gerekmiyor. Panel iki şekli de okuyor — alan varsa önce inline, yok
 - [ ] Rapor dokümanında artık `entries` yok — alan **mevcut değil**, boş değil
 - [ ] Entries dokümanı rapor dokümanından **önce** yazılıyor
 - [ ] Geçici hata → tüm rapor retry; kalıcı hata → inline'a düş
-- [ ] Retry'lar üç doküman için de aynı rapor id'sini kullanıyor
+- [ ] Retry'lar bütün dokümanlar için aynı rapor id'sini kullanıyor
 - [ ] Test raporu gönderildi ve panelde doğrulandı: rapor açılıyor, log akışı yerinde, ağ ve
       navigasyon listeleri dolu
+- [ ] (Birden fazla ekran görüntüsü gönderiyorsanız) `screenshotCount` **ve** `_<index>`
+      doküman id'leri birlikte yazılıyor, sayı yalnızca başarılı yazılan dokümanları içeriyor
 
 Sonuncusu diğerlerinin kaçırdığı hatayı yakalar: trafik yakaladığı belli olan bir raporda log
 listesinin boş görünmesi, panelin gerçek bir akış ya da olmayan bir alan beklerken
 `entries: []` bulduğu anlamına gelir.
+
+---
+
+## İsteğe bağlı: çoklu ekran görüntüsü
+
+Bölmenin parçası değil — ayrı bir ekleme (SDK 1.18.0 / android-0.7.0). Panel rapor başına
+**beş** görüntüye kadar gösteriyor; tek görüntü gönderen bir reporter hiçbir şey değiştirmeden
+çalışmaya devam eder, bu bölüm daha fazlasını göndermek için gerekenleri anlatır.
+
+### Şekil
+
+| | Tek görüntü (değişmedi) | Çoklu görüntü |
+|---|---|---|
+| `collie_reports/{id}.hasScreenshot` | `true` / `false` | aynı anlam — `screenshotCount > 0` |
+| `collie_reports/{id}.screenshotCount` | **yok** | `0`–`5`, gerçekten yazdığınız doküman sayısı |
+| Görüntü doküman id'si | `{reportId}` | `{reportId}_0`, `{reportId}_1`, … `{reportId}_4` |
+| Görüntü gövdesi | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` | aynı + `index` (0 tabanlı) ve `reportId` |
+
+### Dört kural
+
+1. **`screenshotCount` ile sonekli id birlikte gider.** Panel `screenshotCount` alanını
+   gördüğü anda **yalnızca** `_0 … _{n-1}` id'lerine bakar, çıplak `{reportId}` dokümanına hiç
+   bakmaz. Sadece birini yapmak — sayıyı yazıp id'yi soneksiz bırakmak ya da tersi — her
+   görüntüyü, hiçbir yerde hata çıkmadan görünmez yapar.
+
+2. **Sayı, testçinin eklediği değil sizin *yazabildiğiniz* doküman adedidir.** Görüntüleri
+   sırayla `0`'dan başlayan slotlara yazın ve her başarıda sayacı artırın: yazılan id'ler
+   böylece kesintisiz kalır, panelin okuduğu tek aralık da budur. Üçün ikincisi başarısız
+   olursa üçüncüyü `1` slotuna yazın ve `screenshotCount: 2` gönderin — yanında ne olduğunu
+   anlatan bir `screenshotError` ile. Eksik görüntü kümesi ve çalışan bir rapor, hiç rapor
+   olmamasından iyidir.
+
+3. **Üst sınır beş.** Panelde `MAX_SCREENSHOTS` 5 ve fazlasını zaten kırpıyor; kimsenin
+   açmayacağı dokümanları yüklemek yerine sınırı yakalama anında uygulayın.
+
+4. **Boyut sınırı doküman başınadır.** Firestore'un 1 MiB sınırı her görüntü dokümanına ayrı
+   ayrı uygulanır; yani her bir görüntüyü sınırlayın (Collie ham JPEG için 650 KB kullanıyor),
+   toplamı değil. Beş görüntü bu boyutta tek dokümana sığmaz — sığması da gerekmiyor.
+
+Güvenlik kuralları değişmiyor: `match /collie_report_screenshots/{reportId}` sonekli id ile de
+eşleşiyor ve şekil kontrolü yeni `index` / `reportId` alanlarına itiraz etmiyor.
+
+Eski raporlar için backfill gerekmez — `screenshotCount` taşımayan bir rapor panelin eski
+yolundan görüntülenmeye devam eder.
 
 ---
 

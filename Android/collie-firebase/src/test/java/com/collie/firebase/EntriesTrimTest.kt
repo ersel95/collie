@@ -134,4 +134,22 @@ class EntriesTrimTest {
 
         assertTrue(envelope.toString().toByteArray(Charsets.UTF_8).size < 900_000)
     }
+
+    // MARK: - Screenshot document ids
+
+    /**
+     * The id scheme is a contract with the panel, not an implementation detail: the panel
+     * sees `screenshotCount: n` and reads exactly `<reportId>_0 … _<n-1>`. Change the
+     * separator or the numbering base and every image disappears from the panel with no error
+     * anywhere — which is precisely why it is pinned here, and why it must keep matching the
+     * iOS SDK's `screenshotDocumentID`.
+     */
+    @Test
+    fun `screenshot document ids are zero-based and underscore-suffixed`() {
+        val reportId = "9F1C2B7A-0000-4000-8000-000000000001"
+        assertEquals(
+            listOf("${reportId}_0", "${reportId}_1", "${reportId}_2"),
+            (0 until 3).map { FirestoreTransport.screenshotDocumentId(reportId, it) },
+        )
+    }
 }

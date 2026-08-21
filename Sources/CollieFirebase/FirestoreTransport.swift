@@ -11,10 +11,20 @@ import FirebaseFirestore
 ///
 /// **Screenshots go to Firestore, not Cloud Storage.** Storage requires a paid Firebase
 /// plan; on the free tier it is simply unavailable, which would strand every report at
-/// the upload step. So the JPEG is base64-encoded into its *own* document — keeping it
-/// out of the report document means listing reports in the panel never drags megabytes
-/// of image data along. Firestore caps a document at 1 MiB, so `maxScreenshotBytes`
-/// bounds the raw JPEG well below that (base64 inflates by ~33%).
+/// the upload step. So each JPEG is base64-encoded into a document of its *own* — keeping
+/// them out of the report document means listing reports in the panel never drags
+/// megabytes of image data along. Firestore caps a document at 1 MiB, so
+/// `maxScreenshotBytes` bounds each raw JPEG well below that (base64 inflates by ~33%);
+/// it is a per-image limit, never a total, which is exactly why five images need five
+/// documents.
+///
+/// **One document per image, numbered.** A report's images live at
+/// `<screenshotCollection>/<reportID>_0 … _<n-1>` and the report document carries
+/// `screenshotCount: n`. The two travel together by contract: the panel switches shapes
+/// on the presence of `screenshotCount` and then looks *only* at the numbered ids, so
+/// writing one without the other hides every image without an error anywhere. Reports
+/// written before this — a bare `<reportID>` document and no count — keep rendering
+/// through the panel's older path; nothing rewrites them.
 ///
 /// **Idempotency.** The queue's report id becomes the Firestore *document id*, so a
 /// retry after a lost response writes to the same document instead of creating a second
@@ -31,7 +41,12 @@ import FirebaseFirestore
 /// **What is written** (`<collection>/<reportID>`):
 /// - `app`, `device`, `report`, `telemetry` — the envelope minus its stream, decoded from
 ///   JSON so the data is queryable in Firestore rather than an opaque blob.
-/// - `hasScreenshot` — whether `<screenshotCollection>/<reportID>` holds the image.
+/// - `hasScreenshot` — whether the report has any image at all (`screenshotCount > 0`),
+///   kept for the panel's pre-`screenshotCount` path.
+/// - `screenshotCount` — how many screenshot documents were **actually written**, so the
+///   panel reads exactly the ids that exist.
+/// - `screenshotError` — what went wrong with the images that did not make it; absent
+///   when they all landed.
 /// - `entriesTrimmed` — how many log entries the stream lost to the size limit; absent
 ///   when nothing was dropped, which is the normal case.
 /// - `status` — always `"new"`; the panel owns the lifecycle afterwards.
@@ -75,10 +90,16 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         /// A stream above this is trimmed (oldest entries first) rather than rejected —
         /// see `trimEntries`.
         public var maxEntriesBytes: Int
-        /// Upper bound on the RAW screenshot. base64 inflates by ~33%, so this must stay
-        /// comfortably under `maxDocumentBytes`. A larger image is dropped and the report
-        /// still goes — the text and logs matter more than the picture.
+        /// Upper bound on ONE raw screenshot. base64 inflates by ~33%, so this must stay
+        /// comfortably under `maxDocumentBytes`. It is deliberately per-image, not a total:
+        /// each image gets a document of its own, so five of them never have to share one
+        /// document's budget. A larger image is dropped and the report still goes — the
+        /// text and logs matter more than the picture.
         public var maxScreenshotBytes: Int
+        /// How many screenshot documents a report may have. The panel is built around
+        /// `CollieConfiguration.maxScreenshotsLimit` and ignores anything past it, so this
+        /// only ever lowers the count.
+        public var maxScreenshots: Int
 
         public init(
             appKey: String,
@@ -88,7 +109,8 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             configCollection: String = "collie_config",
             maxDocumentBytes: Int = 900_000,
             maxScreenshotBytes: Int = 650_000,
-            maxEntriesBytes: Int = 900_000
+            maxEntriesBytes: Int = 900_000,
+            maxScreenshots: Int = CollieConfiguration.maxScreenshotsLimit
         ) {
             self.appKey = appKey
             self.collection = collection
@@ -98,6 +120,7 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             self.maxDocumentBytes = maxDocumentBytes
             self.maxScreenshotBytes = maxScreenshotBytes
             self.maxEntriesBytes = maxEntriesBytes
+            self.maxScreenshots = min(CollieConfiguration.maxScreenshotsLimit, max(0, maxScreenshots))
         }
     }
 
@@ -121,7 +144,7 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
     public func upload(
         reportID: String,
         envelope: Data,
-        screenshot: Data?
+        screenshots: [Data]
     ) async -> CollieOperationResult<String> {
         // A malformed envelope can never succeed — fail permanently so the queue drops
         // it instead of retrying for 48 hours.
@@ -153,23 +176,37 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             )
         }
 
-        // 1. Screenshot first: if it fails transiently the whole report is retried, so the
-        //    report document never claims an image that was never written.
-        var hasScreenshot = false
-        if let screenshot, !screenshot.isEmpty {
-            if screenshot.count > configuration.maxScreenshotBytes {
-                document["screenshotError"] =
-                    "Screenshot dropped: \(screenshot.count) bytes exceeds the \(configuration.maxScreenshotBytes)-byte Firestore limit"
-            } else {
-                switch await putScreenshot(screenshot, reportID: reportID) {
-                case .success:
-                    hasScreenshot = true
-                case .permanentFailure(let reason):
-                    // Losing the image must not lose the report.
-                    document["screenshotError"] = reason
-                case .transientFailure(let reason):
-                    return .transientFailure(reason)
-                }
+        // 1. Screenshots first: if one fails transiently the whole report is retried, so
+        //    the report document never claims an image that was never written.
+        //
+        //    The slot a document gets is the number written SO FAR, not the tester's
+        //    position in the list. That keeps the written ids contiguous — `_0 … _{n-1}`
+        //    — which is the only shape the panel looks for: it reads that range and
+        //    nothing else, so an image parked at `_3` because `_1` failed would simply
+        //    never be seen. Partial success is a normal outcome here, not an error state:
+        //    two of three images and a `screenshotError` saying what happened to the third
+        //    is worth far more than no report.
+        let images = Array(
+            screenshots.filter { !$0.isEmpty }.prefix(configuration.maxScreenshots)
+        )
+        var screenshotCount = 0
+        var screenshotErrors: [String] = []
+        for (position, image) in images.enumerated() {
+            let label = "Screenshot \(position + 1) of \(images.count)"
+            guard image.count <= configuration.maxScreenshotBytes else {
+                screenshotErrors.append(
+                    "\(label) dropped: \(image.count) bytes exceeds the \(configuration.maxScreenshotBytes)-byte Firestore limit"
+                )
+                continue
+            }
+            switch await putScreenshot(image, reportID: reportID, index: screenshotCount) {
+            case .success:
+                screenshotCount += 1
+            case .permanentFailure(let reason):
+                // Losing an image must not lose the report.
+                screenshotErrors.append("\(label): \(reason)")
+            case .transientFailure(let reason):
+                return .transientFailure(reason)
             }
         }
 
@@ -218,7 +255,18 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
         }
 
         document["appKey"] = configuration.appKey
-        document["hasScreenshot"] = hasScreenshot
+        // Both fields, always. `screenshotCount` is what a current panel reads; the older
+        // boolean stays beside it so a panel that predates the count still shows that the
+        // report has an image.
+        document["hasScreenshot"] = screenshotCount > 0
+        document["screenshotCount"] = screenshotCount
+        if screenshotErrors.isEmpty {
+            // The write merges, so an error left by a failed earlier attempt would outlive
+            // the retry that finally wrote every image — and contradict the count beside it.
+            document["screenshotError"] = FieldValue.delete()
+        } else {
+            document["screenshotError"] = screenshotErrors.joined(separator: " · ")
+        }
         document["status"] = "new"
         document["clientReportId"] = reportID
         document["createdAt"] = FieldValue.serverTimestamp()
@@ -249,7 +297,8 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
             }
             return CollieRemoteConfig(
                 captureEnabled: data["captureEnabled"] as? Bool ?? true,
-                maxScreenshotBytes: data["maxScreenshotBytes"] as? Int
+                maxScreenshotBytes: data["maxScreenshotBytes"] as? Int,
+                maxScreenshots: data["maxScreenshots"] as? Int
             )
         } catch {
             // Unreachable → nil, so BugReportService keeps the previous state.
@@ -259,18 +308,25 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
 
     // MARK: - Screenshot
 
-    /// Writes the JPEG as base64 into its own document, keyed by the report id so a
-    /// retry overwrites rather than duplicates.
+    /// Writes one JPEG as base64 into its own document, keyed by the report id and its
+    /// slot so a retry overwrites rather than duplicates.
+    ///
+    /// `reportId` and `index` travel inside the document as well as in its id: the id is
+    /// the panel's lookup key, and the fields are what makes an image traceable back to
+    /// its report when someone is looking at the collection itself.
     private func putScreenshot(
         _ data: Data,
-        reportID: String
+        reportID: String,
+        index: Int
     ) async -> CollieOperationResult<Void> {
         do {
             try await firestore
                 .collection(configuration.screenshotCollection)
-                .document(reportID)
+                .document(Self.screenshotDocumentID(reportID: reportID, index: index))
                 .setData([
                     "appKey": configuration.appKey,
+                    "reportId": reportID,
+                    "index": index,
                     "contentType": "image/jpeg",
                     "byteSize": data.count,
                     "data": data.base64EncodedString(),
@@ -278,8 +334,14 @@ public final class FirestoreTransport: ReportTransport, @unchecked Sendable {
                 ], merge: true)
             return .success(())
         } catch {
-            return Self.classify(error, action: "write the screenshot")
+            return Self.classify(error, action: "write screenshot \(index)")
         }
+    }
+
+    /// Document id of a report's `index`-th screenshot. The panel derives the same string
+    /// from `screenshotCount`, so the two must never drift apart.
+    static func screenshotDocumentID(reportID: String, index: Int) -> String {
+        "\(reportID)_\(index)"
     }
 
     // MARK: - Log stream

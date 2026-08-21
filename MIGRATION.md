@@ -83,10 +83,15 @@ Order matters. The report document is what the panel discovers; it must never po
 stream that has not been written yet. This is the same ordering the screenshot already has.
 
 ```
-1. write collie_report_screenshots/{reportId}   (if there is one)
-2. write collie_report_entries/{reportId}       ← new
-3. write collie_reports/{reportId}              (without `entries`)
+1. write collie_report_screenshots/{reportId}_0 … _{n-1}   (one per image, if any)
+2. write collie_report_entries/{reportId}                  ← new
+3. write collie_reports/{reportId}                         (without `entries`)
 ```
+
+The screenshot ids are suffixed only if you also send `screenshotCount` — see
+[several screenshots](#optional-several-screenshots) below. If you still write one image, an
+unsuffixed `collie_report_screenshots/{reportId}` and no count is the shape the panel has
+always read, and it stays supported.
 
 If step 2 fails **transiently** (offline, timeout, unavailable), retry the whole report
 later — do not write the report document. If it fails **permanently** (permission denied,
@@ -141,13 +146,60 @@ its retention window passes.
 - [ ] Report document no longer contains `entries` — the field is **absent**, not empty
 - [ ] Entries document is written **before** the report document
 - [ ] Transient failure → retry the whole report; permanent failure → fall back to inline
-- [ ] Retries reuse the same report id for all three documents
+- [ ] Retries reuse the same report id for all documents
 - [ ] Filed a test report and confirmed in the panel: it opens, the log stream is there, the
       network and navigation lists are populated
+- [ ] (If you send more than one screenshot) `screenshotCount` **and** `_<index>` document
+      ids, written together, counting only the documents that succeeded
 
 The last one is the one that catches mistakes the others miss — an empty log list on a
 report that clearly captured traffic means the panel found an `entries: []` where it
 expected either a real stream or an absent field.
+
+---
+
+## Optional: several screenshots
+
+Not part of the split — a separate addition (SDK 1.18.0 / android-0.7.0). The panel shows up
+to **five** images per report; a reporter that sends one keeps working untouched, and this is
+what it takes to send more.
+
+### The shape
+
+| | One image (unchanged) | Several images |
+|---|---|---|
+| `collie_reports/{id}.hasScreenshot` | `true` / `false` | same meaning — `screenshotCount > 0` |
+| `collie_reports/{id}.screenshotCount` | **absent** | `0`–`5`, how many documents you actually wrote |
+| Screenshot document id | `{reportId}` | `{reportId}_0`, `{reportId}_1`, … `{reportId}_4` |
+| Screenshot document body | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` | same, plus `index` (0-based) and `reportId` |
+
+### Four rules
+
+1. **`screenshotCount` and the suffixed ids go together.** The moment the panel sees
+   `screenshotCount` it looks *only* at `_0 … _{n-1}` and never at the bare `{reportId}`.
+   Doing one without the other — a count with unsuffixed ids, or suffixed ids with no count —
+   makes every image invisible, with no error anywhere.
+
+2. **The count is how many documents you *wrote*, not how many the tester attached.** Write
+   the images in order into slots starting at `0` and increment the count on each success:
+   the written ids stay contiguous, which is the only range the panel reads. If the second of
+   three fails, write the third into slot `1` and send `screenshotCount: 2` — plus a
+   `screenshotError` saying what happened. A partial set of images and a working report beats
+   no report.
+
+3. **Five is the ceiling.** The panel's `MAX_SCREENSHOTS` is 5 and it trims past that; cap it
+   at capture time rather than uploading documents nobody will open.
+
+4. **The size limit is per document.** Firestore's 1 MiB cap applies to each screenshot
+   document on its own, so bound each image (Collie uses 650 KB of raw JPEG) — never their
+   total. Five images at that size cannot share one document, and they never have to.
+
+The security rules need no change: `match /collie_report_screenshots/{reportId}` matches a
+suffixed id just as well, and the shape check does not object to the extra `index` /
+`reportId` fields.
+
+Old reports need no backfill — one with no `screenshotCount` keeps rendering through the
+panel's older path.
 
 ---
 

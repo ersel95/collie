@@ -14,17 +14,21 @@ final class UploadQueueTests: XCTestCase {
         var uploadResults: [CollieOperationResult<String>] = []
         private(set) var uploadCallCount = 0
         private(set) var seenReportIDs: [String] = []
+        /// Total screenshot bytes seen per call — one entry per upload attempt.
         private(set) var seenScreenshotSizes: [Int] = []
+        /// The individual images seen on each attempt, so order and count are checkable.
+        private(set) var seenScreenshots: [[Data]] = []
 
         func upload(
             reportID: String,
             envelope: Data,
-            screenshot: Data?
+            screenshots: [Data]
         ) async -> CollieOperationResult<String> {
             lock.lock(); defer { lock.unlock() }
             uploadCallCount += 1
             seenReportIDs.append(reportID)
-            seenScreenshotSizes.append(screenshot?.count ?? 0)
+            seenScreenshotSizes.append(screenshots.reduce(0) { $0 + $1.count })
+            seenScreenshots.append(screenshots)
             return uploadResults.isEmpty ? .success("srv-1") : uploadResults.removeFirst()
         }
 
@@ -69,7 +73,7 @@ final class UploadQueueTests: XCTestCase {
         let transport = MockTransport()
         let queue = makeQueue(transport: transport)
 
-        let outcome = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        let outcome = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
 
         XCTAssertEqual(outcome, .sent(reportID: "srv-1"))
         XCTAssertEqual(transport.uploadCallCount, 1)
@@ -78,11 +82,88 @@ final class UploadQueueTests: XCTestCase {
         XCTAssertEqual(pending, 0)
     }
 
+    /// Several images survive the trip in order — the panel numbers them by position, so
+    /// a queue that reordered them would caption the wrong picture.
+    func testSubmitCarriesEveryScreenshotInOrder() async {
+        let transport = MockTransport()
+        let queue = makeQueue(transport: transport)
+        let images = [Data([0x01]), Data([0x02, 0x02]), Data([0x03, 0x03, 0x03])]
+
+        let outcome = await queue.submit(reportBody: reportBody, screenshots: images)
+
+        XCTAssertEqual(outcome, .sent(reportID: "srv-1"))
+        XCTAssertEqual(transport.seenScreenshots.first, images)
+    }
+
+    /// Queued, then read back after a "restart": every image must return, in order, from
+    /// its own file on disk — and nothing may be left behind once the report is sent.
+    func testQueuedScreenshotsSurviveTheRoundTripToDisk() async {
+        let transport1 = MockTransport()
+        transport1.uploadResults = [.transientFailure("no VPN")]
+        let queue1 = makeQueue(transport: transport1)
+        let images = [Data([0x01]), Data([0x02, 0x02]), Data([0x03, 0x03, 0x03])]
+        _ = await queue1.submit(reportBody: reportBody, screenshots: images)
+
+        let transport2 = MockTransport()
+        let queue2 = makeQueue(transport: transport2)
+        await queue2.drain()
+
+        XCTAssertEqual(transport2.seenScreenshots.first, images)
+        let leftovers = try? FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        XCTAssertEqual(leftovers, [], "no orphaned screenshot file may stay behind")
+    }
+
+    /// An envelope written by a build that predated multiple screenshots: `hasScreenshot`
+    /// and a single unsuffixed file, no `screenshotCount`. It has to be read back after
+    /// the app update, or a report queued off-VPN loses its image to the upgrade.
+    func testLegacyEnvelopeOnDiskStillFindsItsScreenshot() async throws {
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let id = UUID().uuidString
+        let now = Date().timeIntervalSinceReferenceDate
+        let legacy = "{\"id\":\"\(id)\",\"attempt\":0,\"createdAt\":\(now),"
+            + "\"nextAttemptAt\":\(now - 1),\"hasScreenshot\":true}"
+        try Data(legacy.utf8).write(to: tempDir.appendingPathComponent("\(id).json"))
+        try reportBody.write(to: tempDir.appendingPathComponent("\(id).report"))
+        try screenshot.write(to: tempDir.appendingPathComponent("\(id).screenshot"))
+
+        let transport = MockTransport()
+        let queue = makeQueue(transport: transport)
+        await queue.drain()
+
+        XCTAssertEqual(transport.seenScreenshots.first, [screenshot])
+        let leftovers = try FileManager.default.contentsOfDirectory(atPath: tempDir.path)
+        XCTAssertEqual(leftovers, [], "the old unsuffixed file must be cleaned up too")
+    }
+
+    /// The same legacy envelope, but the retry fails: it is written back to disk, and it must
+    /// come back as legacy. Stamping a `screenshotCount` on it would point the next attempt
+    /// at `<id>.screenshot.0`, a file that build never wrote — and the image would disappear
+    /// on the retry rather than on the upgrade. (It was exactly this on Android.)
+    func testRewritingALegacyEnvelopeDoesNotLoseItsScreenshot() async throws {
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        let id = UUID().uuidString
+        let now = Date().timeIntervalSinceReferenceDate
+        let legacy = "{\"id\":\"\(id)\",\"attempt\":0,\"createdAt\":\(now),"
+            + "\"nextAttemptAt\":\(now - 1),\"hasScreenshot\":true}"
+        try Data(legacy.utf8).write(to: tempDir.appendingPathComponent("\(id).json"))
+        try reportBody.write(to: tempDir.appendingPathComponent("\(id).report"))
+        try screenshot.write(to: tempDir.appendingPathComponent("\(id).screenshot"))
+
+        let failing = MockTransport()
+        failing.uploadResults = [.transientFailure("no VPN")]
+        await makeQueue(transport: failing).drain()
+
+        let succeeding = MockTransport()
+        await makeQueue(transport: succeeding).drain()
+
+        XCTAssertEqual(succeeding.seenScreenshots.first, [screenshot])
+    }
+
     func testSubmitWithoutScreenshotStillUploads() async {
         let transport = MockTransport()
         let queue = makeQueue(transport: transport)
 
-        let outcome = await queue.submit(reportBody: reportBody, screenshot: nil)
+        let outcome = await queue.submit(reportBody: reportBody, screenshots: [])
 
         XCTAssertEqual(outcome, .sent(reportID: "srv-1"))
         XCTAssertEqual(transport.seenScreenshotSizes, [0])
@@ -95,7 +176,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = [.permanentFailure("HTTP 400")]
         let queue = makeQueue(transport: transport)
 
-        let outcome = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        let outcome = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
 
         XCTAssertEqual(outcome, .rejected("HTTP 400"))
         let pending = await queue.pendingCount()
@@ -107,7 +188,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = [.transientFailure("no VPN"), .permanentFailure("api-key is invalid or disabled (401)")]
         let queue = makeQueue(transport: transport)
 
-        _ = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        _ = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
         await queue.drain()
 
         let pending = await queue.pendingCount()
@@ -121,7 +202,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = [.transientFailure("no VPN")]
         let queue = makeQueue(transport: transport)
 
-        let outcome = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        let outcome = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
 
         XCTAssertEqual(outcome, .queued)
         let pending = await queue.pendingCount()
@@ -133,7 +214,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = [.transientFailure("no VPN")]
         let queue = makeQueue(transport: transport)
 
-        _ = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        _ = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
         await queue.drain()   // upload now succeeds (mock default is .success)
 
         let pending = await queue.pendingCount()
@@ -149,7 +230,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = [.transientFailure("connection dropped")]
         let queue = makeQueue(transport: transport)
 
-        _ = await queue.submit(reportBody: reportBody, screenshot: screenshot)
+        _ = await queue.submit(reportBody: reportBody, screenshots: [screenshot])
         await queue.drain()
 
         XCTAssertEqual(transport.uploadCallCount, 2)
@@ -165,8 +246,8 @@ final class UploadQueueTests: XCTestCase {
         let transport = MockTransport()
         let queue = makeQueue(transport: transport)
 
-        _ = await queue.submit(reportBody: reportBody, screenshot: nil)
-        _ = await queue.submit(reportBody: reportBody, screenshot: nil)
+        _ = await queue.submit(reportBody: reportBody, screenshots: [])
+        _ = await queue.submit(reportBody: reportBody, screenshots: [])
 
         XCTAssertEqual(Set(transport.seenReportIDs).count, 2)
     }
@@ -177,7 +258,7 @@ final class UploadQueueTests: XCTestCase {
         let transport1 = MockTransport()
         transport1.uploadResults = [.transientFailure("dropped")]
         let queue1 = makeQueue(transport: transport1)
-        _ = await queue1.submit(reportBody: reportBody, screenshot: screenshot)
+        _ = await queue1.submit(reportBody: reportBody, screenshots: [screenshot])
         let originalID = transport1.seenReportIDs.first
 
         // "Restart": a new queue + new transport over the same directory.
@@ -199,7 +280,7 @@ final class UploadQueueTests: XCTestCase {
         transport.uploadResults = Array(repeating: .transientFailure("down"), count: 10)
         let queue = makeQueue(transport: transport)
 
-        _ = await queue.submit(reportBody: reportBody, screenshot: nil)
+        _ = await queue.submit(reportBody: reportBody, screenshots: [])
         for _ in 0..<10 {
             await queue.drain()
         }

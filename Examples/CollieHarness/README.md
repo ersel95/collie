@@ -43,7 +43,14 @@ axe record-video --udid $UDID --output flow.mp4
 ```
 
 Synthetic swipes do land as PencilKit strokes, so the markup editor can be verified
-end-to-end. To inspect a transition frame by frame, tile the recording:
+end-to-end.
+
+**Screenshot mode** is drivable the same way, and it is the one flow worth checking by hand
+after any change to the overlay: tap **Screenshot** in the form, then type into the harness's
+secure field. If the text appears, touches are reaching the app underneath — which is the
+whole premise of the mode, and which was broken for as long as the overlay window existed
+(`PassthroughWindow`). `axe describe-ui` will not tell you: it reports Collie's window only,
+whatever the app below is doing. To inspect a transition frame by frame, tile the recording:
 
 ```sh
 ffmpeg -i flow.mp4 -frames:v 1 -vf "fps=8,scale=120:-1,tile=10x3:margin=3:padding=3" contact.png

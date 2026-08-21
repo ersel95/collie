@@ -163,6 +163,24 @@ class CollieConfigurationTest {
     // MARK: - Clamping
 
     @Test
+    fun `the screenshot count is clamped to the shared ceiling`() {
+        // The panel reads a fixed number of screenshot slots, so the SDK must never capture
+        // past it — an image beyond the ceiling would upload and never be displayed.
+        assertEquals(
+            CollieConfiguration.MAX_SCREENSHOTS_LIMIT,
+            config(maxScreenshots = 50).effectiveMaxScreenshots,
+        )
+        assertEquals(2, config(maxScreenshots = 2).effectiveMaxScreenshots)
+    }
+
+    private fun config(maxScreenshots: Int) = CollieConfiguration(
+        enabled = true,
+        apiBaseUrl = "https://collie.example.com",
+        apiKey = "key",
+        maxScreenshots = maxScreenshots,
+    )
+
+    @Test
     fun `screenshot quality is clamped into the encoder's range`() {
         val tooHigh = CollieConfiguration(
             enabled = true,

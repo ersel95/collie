@@ -3,6 +3,60 @@
 Android ships on its own version line (`android-*` tags); the iOS changelog is
 [../CHANGELOG.md](../CHANGELOG.md). See [../RELEASING.md](../RELEASING.md).
 
+## 0.7.0 — 2026-08-21
+
+### Added
+- **A report can carry up to five screenshots** — the Android half of iOS 1.18.0, same
+  feature, same document shape, same ceiling. One picture was the whole evidence a tester
+  could attach, and a bug rarely lives on one screen.
+
+  The shake-time capture still arrives attached. What is new is the row below the fields: a
+  thumbnail per image, each tappable into the markup editor and removable, and an **Add**
+  tile that opens the system photo picker until five is reached. The picker is
+  `ActivityResultContracts.PickVisualMedia`, which runs outside the app and grants access
+  only to the items the tester chose — so `READ_MEDIA_IMAGES` is never required and Collie's
+  manifest, which merges into the host's, still declares no storage permission. Picked
+  images are decoded as software bitmaps, because a hardware one cannot be drawn into the
+  markup canvas.
+
+  Markup still only ever *replaces* the image it was opened for, addressed by id rather
+  than position: the tester can remove a thumbnail while another is being marked up, and
+  the result still lands on the right picture.
+
+- `CollieConfiguration.maxScreenshots` (default 5, clamped to
+  `CollieConfiguration.MAX_SCREENSHOTS_LIMIT` by `effectiveMaxScreenshots`) and a
+  `maxScreenshots` key in the remote config, so an app can be given fewer slots without a
+  new build. `BugReportService.maxScreenshots` is the stricter of the two.
+
+### Changed
+- **Firestore: one document per image, numbered.** A report's images are written to
+  `collie_report_screenshots/<reportId>_0 … _<n-1>` and the report document gains
+  `screenshotCount`. The two are one contract with the panel: it switches shapes on the
+  count and then reads only the numbered ids. The count is how many documents were
+  *actually written*, so a report whose third image failed says `2` and explains the third
+  in `screenshotError`. `maxScreenshotBytes` is now explicitly **per image**.
+
+  Nothing existing is rewritten, and the security rules need no change — see
+  [`../MIGRATION.md`](../MIGRATION.md).
+
+- **HTTPS: one multipart part per image.** The first keeps the name it has always had —
+  `screenshot` / `screenshot.jpg` — so a single-image request is byte-for-byte what a
+  deployed backend already parses; further images are `screenshot[i]` / `screenshot<i>.jpg`,
+  numbered from 1.
+
+- **Breaking — `ReportTransport`.** `upload(reportId, envelope, screenshot)` becomes
+  `upload(reportId, envelope, screenshots: List<ByteArray>)`. Hosts that ship their own
+  transport must update the signature; hosts using the built-in client or
+  `FirestoreTransport` need no change. `BugReportService.sendReport` takes
+  `screenshotsJpeg: List<ByteArray>` for the same reason, and `collie-no-op` mirrors both —
+  its signatures must stay identical or the host's release build stops compiling.
+
+- The upload queue writes `<id>.screenshot.<index>` files and records `screenshotCount` in
+  its envelope. `hasScreenshot` stays in that envelope and the unsuffixed file name is still
+  read and still deleted: a report queued off-VPN is read back by whatever build is
+  installed when the connection returns, and losing its image to an app update would be a
+  silent loss of the thing the tester filed the report for.
+
 ## 0.6.0 — 2026-08-18
 
 ### Fixed

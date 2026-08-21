@@ -113,18 +113,32 @@ Collie.configure(
 )
 ```
 
-A report is three documents, all under the same report id:
+A report is one document for itself, one for its stream, and one **per screenshot** — all
+under the same report id:
 
 | Document | Holds |
 |---|---|
-| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `clientReportId`, `createdAt` |
+| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `screenshotCount`, `clientReportId`, `createdAt` |
 | `collie_report_entries/<reportId>` | `appKey`, `entries` (the full raw stream), `createdAt` |
-| `collie_report_screenshots/<reportId>` | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` |
+| `collie_report_screenshots/<reportId>_<index>` | `appKey`, `reportId`, `index` (0-based), `contentType`, `byteSize`, `data` (base64), `createdAt` |
 
-The stream and the screenshot stay out of the report document for the same reason: the panel
+The stream and the screenshots stay out of the report document for the same reason: the panel
 lists reports by four fields, and Firestore's web SDK cannot fetch a subset of a document —
 anything left inside is downloaded on every list load. Cloud Storage would be the natural home
-for the image, but it needs a paid plan, so it is deliberately not used.
+for the images, but it needs a paid plan, so it is deliberately not used.
+
+A report carries **0 to 5 images**: the capture taken at shake time, plus anything the tester
+attaches in the form from the system photo picker (which needs no permission — Collie never
+raises one). `screenshotCount` and the numbered ids are one contract: the panel switches
+shapes on the count and then reads exactly `_0 … _<count-1>`, so writing one without the other
+hides every image, silently. The count is how many documents were **actually written**, so a
+report whose third image failed says `2` and carries a `screenshotError` explaining the third.
+Reports filed by an SDK older than android-0.7.0 have no count and a single unsuffixed
+document; the panel keeps reading those through its older path.
+
+To offer testers fewer slots, set `maxScreenshots` on `CollieConfiguration`, or
+`maxScreenshots` on the app's `collie_config/<appKey>` document to change it without a new
+build. `maxScreenshotBytes` bounds **each** image, never their total.
 
 Rules template: [`../Integration/firestore.rules`](../Integration/firestore.rules) — deploy it
 before shipping a build that writes the split shape. Writing to this Firestore without Collie:

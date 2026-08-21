@@ -25,6 +25,7 @@ public class CollieConfiguration(
     public val baseRetryDelayMillis: Long = 5_000,
     public val screenshotJpegQuality: Double = 0.7,
     public val maxScreenshotBytes: Int = 4 * 1_048_576,
+    public val maxScreenshots: Int = MAX_SCREENSHOTS_LIMIT,
     public val logSnapshotProvider: (() -> List<CollieLogEntry>)? = null,
     public val sessionIdProvider: (() -> String?)? = null,
     public val diagnostics: ((String) -> Unit)? = null,
@@ -38,6 +39,9 @@ public class CollieConfiguration(
      * a release build that keeps its own network logger keeps excluding the same URLs.
      */
     public val effectiveJpegQuality: Double = screenshotJpegQuality.coerceIn(0.1, 1.0)
+
+    /** Mirrors the real artifact's clamp, parameter for parameter. */
+    public val effectiveMaxScreenshots: Int = maxScreenshots.coerceIn(0, MAX_SCREENSHOTS_LIMIT)
 
     /** Always `null`: there is nothing to validate when nothing can be installed. */
     public val validationError: String? get() = null
@@ -60,6 +64,12 @@ public class CollieConfiguration(
         public const val DEFAULT_REPORTS_PATH: String = "/api/v1/collie/reports"
         public const val DEFAULT_CONFIG_PATH: String = "/api/v1/collie/config"
         public const val API_KEY_HEADER: String = "x-collie-api-key"
+
+        /**
+         * Hard ceiling on how many screenshots a report may carry — the same constant the
+         * real artifact exposes, because a host may read it when wiring its own UI.
+         */
+        public const val MAX_SCREENSHOTS_LIMIT: Int = 5
     }
 }
 
@@ -181,13 +191,14 @@ public sealed interface CollieOperationResult<out T> {
 public data class CollieRemoteConfig(
     public val captureEnabled: Boolean,
     public val maxScreenshotBytes: Int? = null,
+    public val maxScreenshots: Int? = null,
 )
 
 public interface ReportTransport {
     public suspend fun upload(
         reportId: String,
         envelope: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): CollieOperationResult<String>
 
     public suspend fun fetchRemoteConfig(): CollieRemoteConfig?
@@ -206,6 +217,7 @@ public sealed interface CollieSubmitOutcome {
 public class BugReportService private constructor() {
     public val isCaptureEnabled: Boolean get() = false
     public val maxScreenshotBytes: Int get() = 0
+    public val maxScreenshots: Int get() = 0
     public val screenshotJpegQuality: Double get() = 0.0
     public val hasStoredTesterName: Boolean get() = false
     public fun storeTesterName(name: String): Unit = Unit
@@ -214,7 +226,7 @@ public class BugReportService private constructor() {
     public suspend fun sendReport(
         whatHappened: String,
         testerName: String?,
-        screenshotJpeg: ByteArray?,
+        screenshotsJpeg: List<ByteArray>,
         identity: CollieDeviceIdentity,
         telemetry: CollieTelemetry? = null,
     ): CollieSubmitOutcome = CollieSubmitOutcome.Rejected("Collie is not present in this build")

@@ -2,21 +2,54 @@
 import SwiftUI
 import UIKit
 
+/// One image the report is carrying: the picture itself, plus when it arrived and where
+/// from — the two facts the analyst needs and the tester never types.
+///
+/// Identified rather than addressed by position: the tester can remove the second thumbnail
+/// while the third is being marked up, and an index would then write the result onto the
+/// wrong image.
+struct BugReportShot: Identifiable {
+    let id = UUID()
+    var image: UIImage
+    let event: CollieScreenshotEvent
+}
+
+/// Everything the tester has entered so far.
+///
+/// It lives outside the form because the form is **not** the only screen in this flow: the
+/// tester leaves it for screenshot mode, walks through the app, and comes back. What they
+/// had already written has to survive that trip — a bug reporter that loses the sentence
+/// when you go and photograph the bug is one that gets used once.
+struct BugReportDraft {
+    var whatHappened: String = ""
+    var testerName: String = ""
+    var shots: [BugReportShot] = []
+}
+
 /// The bug report screen (SwiftUI). Presented from the banner's **Yes**.
 ///
-/// - One field: **"What happened?"** → `whatHappened`.
-/// - On first use (no stored name) a **name** field is shown as well (one time only).
-/// - Tapping the screenshot preview opens the system markup editor (QuickLook); saving
-///   there replaces the image the rest of the flow uses.
-/// - **Send** button: active once the description (after trimming) and, if required,
-///   the name are filled.
-/// - Send → loading → report uploaded to the panel: closes with the report id on success; on a
-///   transient failure the report is queued and the sheet closes with "queued"; on a
-///   permanent failure an inline error is shown.
+/// The layout is the one a tester already knows from reporting a problem in a social app:
+/// a title, the whole screen as one writing surface, and the evidence sitting on the
+/// keyboard rather than competing with the text for room.
+///
+/// - **Title**: "What happened?" — so the field itself needs no label.
+/// - Everything below is **one text field**, focused on open, with the keyboard already up.
+///   Nothing else competes with it: the name, needed once per device, is asked in an alert
+///   on the first **Send** — where there is room to say *why* it is being asked, which a
+///   placeholder above the field never managed.
+/// - Above the keyboard: the report's screenshots as thumbnails (each removable with ✕,
+///   each tappable into the markup editor), and two buttons —
+///   - **Screenshot** hands the app back to the tester so they can photograph other
+///     screens (`ScreenshotModeOverlay`);
+///   - **Upload** opens the system photo picker.
+///   Both stop at `BugReportService.maxScreenshots`.
+/// - **Send** → loading → report uploaded to the panel: closes with the report id on
+///   success; on a transient failure the report is queued and the sheet closes with
+///   "queued"; on a permanent failure an inline error is shown.
 @MainActor
 struct BugReportSheet: View {
 
-    /// Why the sheet closed (the banner shows a toast accordingly).
+    /// Why the sheet closed (the banner acts on it).
     enum Outcome {
         case cancelled
         case sent(reportID: String)
@@ -24,6 +57,9 @@ struct BugReportSheet: View {
         /// The logo in the navigation bar was tapped: close the Collie UI, then invoke
         /// the host's switch-tool handler.
         case switchTool
+        /// The tester wants to photograph the app: hide the form — keeping everything in
+        /// the draft — and enter screenshot mode.
+        case captureScreenshots(draft: BugReportDraft)
     }
 
     enum SubmitState: Equatable {
@@ -32,150 +68,303 @@ struct BugReportSheet: View {
         case failed(String)
     }
 
-    /// Fields, in keyboard/focus order.
-    private enum Field: Hashable {
-        case name, happened
-    }
-
     /// Called when the sheet closes.
     let onClose: (_ outcome: Outcome) -> Void
 
-    /// The captured screenshot, replaced in place when the tester marks it up — what is
-    /// uploaded is whatever this holds at send time.
-    @State private var screenshot: UIImage?
-    @State private var whatHappened: String = ""
-    @State private var testerName: String = ""
+    @State private var shots: [BugReportShot]
+    @State private var whatHappened: String
+    @State private var testerName: String
     @State private var state: SubmitState = .idle
     /// Non-nil while the markup editor is up, holding the image handed to it.
     @State private var markupSession: MarkupSession?
-    @FocusState private var focusedField: Field?
+    /// Whether the system photo picker is up.
+    @State private var isPickingScreenshots = false
+    /// Whether the one-time name question is up. Raised by **Send**, not by opening the
+    /// form: the tester came here to describe a bug, and being asked who they are before
+    /// they have written a word is a question out of nowhere.
+    @State private var isAskingName = false
+    @FocusState private var isWriting: Bool
 
-    /// Identified so SwiftUI can drive the cover from it.
+    /// Identified so SwiftUI can drive the cover from it. Carries the id of the shot being
+    /// marked up, so the result lands on that image and no other.
     private struct MarkupSession: Identifiable {
         let id = UUID()
+        let shotID: UUID
         let image: UIImage
     }
 
-    init(screenshot: UIImage?, onClose: @escaping (_ outcome: Outcome) -> Void) {
-        _screenshot = State(initialValue: screenshot)
+    init(draft: BugReportDraft, onClose: @escaping (_ outcome: Outcome) -> Void) {
+        _shots = State(initialValue: draft.shots)
+        _whatHappened = State(initialValue: draft.whatHappened)
+        _testerName = State(initialValue: draft.testerName)
         self.onClose = onClose
     }
+
+    /// What the form is holding right now — handed back when it steps aside for screenshot
+    /// mode, and handed in again when it returns.
+    private var draft: BugReportDraft {
+        BugReportDraft(whatHappened: whatHappened, testerName: testerName, shots: shots)
+    }
+
+    /// How many images this report may carry. Read live rather than captured at init: the
+    /// server-side value can land while the sheet is open, and the number shown next to the
+    /// thumbnails must be the number the transport will honour.
+    private var maxScreenshots: Int {
+        Collie.bugReportService?.maxScreenshots ?? CollieConfiguration.maxScreenshotsLimit
+    }
+
+    private var room: Int { max(0, maxScreenshots - shots.count) }
 
     private let requiresName: Bool = !CollieDeviceIdentity.hasStoredName
     /// Whether the host registered a switch-tool handler (`Collie.onLogoTap`); when it
     /// did, the nav-bar logo becomes a button.
     private let hasLogoTapHandler: Bool = BugReportBanner.shared.logoTapHandler != nil
 
-    /// Focus order of the visible fields (the name only exists on first use).
-    private var fieldOrder: [Field] {
-        (requiresName ? [Field.name] : []) + [.happened]
-    }
-
-    private var isLastFieldFocused: Bool {
-        guard let f = focusedField, let i = fieldOrder.firstIndex(of: f) else { return false }
-        return i == fieldOrder.count - 1
-    }
-
-    /// Move to the next field; dismiss the keyboard on the last one.
-    private func focusNext() {
-        guard let f = focusedField, let i = fieldOrder.firstIndex(of: f) else {
-            focusedField = fieldOrder.first
-            return
-        }
-        focusedField = (i + 1 < fieldOrder.count) ? fieldOrder[i + 1] : nil
-    }
-
     private var trimmedHappened: String { whatHappened.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedName: String { testerName.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    /// The description is the only thing that gates the button. A missing name does not:
+    /// it is asked for — and explained — after Send, and the flow carries straight on.
     private var canSend: Bool {
-        guard !trimmedHappened.isEmpty else { return false }
-        if requiresName, trimmedName.isEmpty { return false }
-        return state != .sending
+        !trimmedHappened.isEmpty && state != .sending
     }
 
     var body: some View {
         NavigationView {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 20) {
-                        if requiresName {
-                            nameSection.id(Field.name)
-                        }
-                        fieldSection(
-                            title: "What happened?",
-                            placeholder: "Describe the problem you ran into…",
-                            text: $whatHappened,
-                            field: .happened
-                        )
-                        .id(Field.happened)
-                        if case let .failed(message) = state {
-                            errorBanner(message)
-                        }
-                        // Below the inputs on purpose: the keyboard covers the bottom of
-                        // the sheet, and what the tester needs to reach is the text field,
-                        // not the thumbnail.
-                        if let screenshot {
-                            previewSection(screenshot)
-                        }
-                        // Bottom spacer so the keyboard doesn't cover the last field.
-                        Color.clear.frame(height: 8)
+            editor
+                .navigationTitle("What happened?")
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .principal) { titleItem }
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Cancel") { onClose(.cancelled) }
+                            .disabled(state == .sending)
                     }
-                    .padding(20)
+                    ToolbarItem(placement: .confirmationAction) { sendButton }
                 }
-                // When focus changes, scroll the focused field above the keyboard.
-                .onChange(of: focusedField) { _, newValue in
-                    guard let f = newValue else { return }
-                    withAnimation(.easeOut(duration: 0.25)) {
-                        proxy.scrollTo(f, anchor: .center)
-                    }
-                }
-            }
-            .navigationTitle("Report a Problem")
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    logoItem
-                }
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { onClose(.cancelled) }
-                        .disabled(state == .sending)
-                }
-                ToolbarItem(placement: .confirmationAction) {
-                    sendButton
-                }
-                // Keyboard navigation: "Done" on the last field, "Next" otherwise.
-                ToolbarItemGroup(placement: .keyboard) {
-                    Spacer()
-                    if isLastFieldFocused {
-                        Button("Done") { focusedField = nil }
-                    } else {
-                        Button("Next") { focusNext() }
-                    }
-                }
-            }
+                // The attachment bar rides the keyboard: `safeAreaInset` is laid out against
+                // the keyboard's safe area, so it sits directly above it while typing and
+                // falls to the bottom of the screen when the keyboard goes away. Anything
+                // pinned to the bottom by hand ends up underneath the keyboard instead.
+                .safeAreaInset(edge: .bottom, spacing: 0) { attachmentBar }
         }
         .navigationViewStyle(.stack)
         .interactiveDismissDisabled(state == .sending)
+        .onAppear {
+            // The tester came here to write a sentence; opening with the keyboard down
+            // costs them a tap and hides the attachment bar, which lives above it.
+            isWriting = true
+        }
+        .alert("One thing first", isPresented: $isAskingName) {
+            TextField("Your name", text: $testerName)
+                .textInputAutocapitalization(.words)
+            Button("Save and send") { performSubmit() }
+                .disabled(trimmedName.isEmpty)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text(
+                "Reports from every test device land in one list. Your name says which one "
+                + "this came from — asked once, stored on this device."
+            )
+        }
         .fullScreenCover(item: $markupSession) { session in
             ScreenshotMarkupEditor(image: session.image) { marked in
-                finishMarkup(with: marked)
+                finishMarkup(session, with: marked)
+            }
+            .ignoresSafeArea()
+        }
+        .sheet(isPresented: $isPickingScreenshots) {
+            ScreenshotPicker(limit: room) { images in
+                isPickingScreenshots = false
+                attach(images)
             }
             .ignoresSafeArea()
         }
     }
 
-    // MARK: - Markup
+    // MARK: - Writing surface
 
-    private func startMarkup() {
-        guard let screenshot else { return }
-        focusedField = nil
-        markupSession = MarkupSession(image: screenshot)
+    /// The whole screen is the field — nothing above it, nothing beside it.
+    private var editor: some View {
+        VStack(spacing: 0) {
+            if case let .failed(message) = state {
+                errorBanner(message)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 12)
+            }
+            ZStack(alignment: .topLeading) {
+                if whatHappened.isEmpty {
+                    Text("Describe what happened, or what did not work.")
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 16)
+                        .allowsHitTesting(false)
+                }
+                TextEditor(text: $whatHappened)
+                    .scrollContentBackground(.hidden)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
+                    .disabled(state == .sending)
+                    .focused($isWriting)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+        .background(Color(.systemBackground))
+        // Tapping the empty part of the page puts the cursor back in the field, the way a
+        // full-page composer behaves everywhere else.
+        .contentShape(Rectangle())
+        .onTapGesture { isWriting = true }
     }
 
-    /// `nil` means the tester cancelled — the screenshot stays as it was captured.
-    private func finishMarkup(with marked: UIImage?) {
-        if let marked { screenshot = marked }
+    // MARK: - Attachment bar
+
+    /// The thumbnails and the two ways to add another, directly above the keyboard.
+    @ViewBuilder
+    private var attachmentBar: some View {
+        if maxScreenshots > 0 {
+            VStack(spacing: 10) {
+                if !shots.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 10) {
+                            ForEach(shots) { shot in
+                                thumbnail(shot)
+                            }
+                        }
+                        // Room for the remove badge, which sits half outside the thumbnail.
+                        .padding(.horizontal, 16)
+                        .padding(.top, 6)
+                    }
+                }
+                HStack(spacing: 10) {
+                    attachmentButton(
+                        title: "Screenshot",
+                        systemImage: "camera",
+                        action: {
+                            isWriting = false
+                            onClose(.captureScreenshots(draft: draft))
+                        }
+                    )
+                    attachmentButton(
+                        title: "Upload",
+                        systemImage: "photo.on.rectangle",
+                        action: {
+                            isWriting = false
+                            isPickingScreenshots = true
+                        }
+                    )
+                }
+                .padding(.horizontal, 16)
+            }
+            .padding(.bottom, 10)
+            .frame(maxWidth: .infinity)
+            .background(.bar)
+        }
+    }
+
+    private func attachmentButton(
+        title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            Label(title, systemImage: systemImage)
+                .font(.subheadline.weight(.medium))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.secondary.opacity(0.15))
+                )
+        }
+        .buttonStyle(.plain)
+        // Both entries stop at the same place: past the limit the transport would drop the
+        // image anyway, and offering it is a promise the report does not keep.
+        .disabled(state == .sending || room == 0)
+        .opacity(room == 0 ? 0.4 : 1)
+    }
+
+    private func thumbnail(_ shot: BugReportShot) -> some View {
+        Button {
+            startMarkup(shot)
+        } label: {
+            Image(uiImage: shot.image)
+                .resizable()
+                .scaledToFill()
+                .frame(width: Self.thumbnailWidth, height: Self.thumbnailHeight)
+                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 8)
+                        .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
+                )
+                // `scaledToFill` leaves the image LARGER than the tile, and `clipShape` only
+                // clips what is drawn — the touch area keeps the overflowing size. Two tiles
+                // then overlap invisibly and the later one swallows its neighbour's remove
+                // badge: tapping the ✕ opened the markup editor instead.
+                .contentShape(RoundedRectangle(cornerRadius: 8))
+        }
+        .buttonStyle(.plain)
+        .disabled(state == .sending)
+        .accessibilityLabel("Screenshot — tap to mark it up")
+        // An overlay rather than a child of the button above: a button inside a button is
+        // one tap target, and removing an image would open the editor instead.
+        .overlay(alignment: .topTrailing) {
+            Button {
+                remove(shot)
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.body)
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, Color.black.opacity(0.6))
+            }
+            .buttonStyle(.plain)
+            .disabled(state == .sending)
+            .offset(x: 6, y: -6)
+            .accessibilityLabel("Remove screenshot")
+        }
+    }
+
+    /// Small enough that a row of five fits above the keyboard without stealing the writing
+    /// surface, large enough to tell two screens of the same app apart.
+    private static let thumbnailWidth: CGFloat = 54
+    private static let thumbnailHeight: CGFloat = 96
+
+    // MARK: - Screenshots
+
+    private func startMarkup(_ shot: BugReportShot) {
+        isWriting = false
+        markupSession = MarkupSession(shotID: shot.id, image: shot.image)
+    }
+
+    /// `nil` means the tester cancelled — the screenshot stays as it was.
+    ///
+    /// The result is written by id: if the tester removed that thumbnail while the editor
+    /// was up, there is nothing to write it to and the marks are dropped with it, rather
+    /// than landing on whichever image took its place.
+    private func finishMarkup(_ session: MarkupSession, with marked: UIImage?) {
+        if let marked, let index = shots.firstIndex(where: { $0.id == session.shotID }) {
+            shots[index].image = marked
+        }
         markupSession = nil
+    }
+
+    /// Appends picked images, never past the limit — the picker already caps the selection,
+    /// and this holds even if a slower load lets a second selection through.
+    private func attach(_ images: [UIImage]) {
+        let now = Date()
+        shots.append(
+            contentsOf: images.prefix(room).map {
+                BugReportShot(
+                    image: $0,
+                    // A library image was taken at some earlier, unknown time; what the
+                    // stream can honestly record is when it was attached.
+                    event: CollieScreenshotEvent(date: now, source: .library)
+                )
+            }
+        )
+    }
+
+    private func remove(_ shot: BugReportShot) {
+        shots.removeAll { $0.id == shot.id }
     }
 
     // MARK: - Sections
@@ -184,101 +373,27 @@ struct BugReportSheet: View {
     /// handler, it becomes a button: tapping it closes the Collie UI and hands off to
     /// the other tool (the handler runs after the UI has fully closed).
     @ViewBuilder
-    private var logoItem: some View {
-        let logo = Image(systemName: "pawprint.fill")
-            .resizable()
-            .scaledToFit()
-            .frame(height: 22)
-            .foregroundStyle(.primary)
-        if hasLogoTapHandler {
-            Button {
-                onClose(.switchTool)
-            } label: {
-                logo
-            }
-            .buttonStyle(.plain)
-            .disabled(state == .sending)
-            .accessibilityLabel("Collie — switch tool")
-        } else {
-            logo
-                .accessibilityLabel("Collie")
-        }
-    }
-
-    /// The screenshot preview. Tapping it opens the markup editor — the tester can circle
-    /// or scribble on the problem instead of describing where it is.
-    private func previewSection(_ image: UIImage) -> some View {
-        VStack(spacing: 6) {
-            Button {
-                startMarkup()
-            } label: {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFit()
-                    .frame(maxHeight: 180)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 12)
-                            .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-                    )
-                    .overlay(alignment: .bottomTrailing) {
-                        Image(systemName: "pencil.tip.crop.circle")
-                            .font(.title3)
-                            .foregroundStyle(.white)
-                            .padding(6)
-                            .background(Circle().fill(Color.accentColor))
-                            .padding(8)
-                    }
-            }
-            .buttonStyle(.plain)
-            .disabled(state == .sending)
-            .accessibilityLabel("Screenshot — tap to mark up")
-            Text("Tap the screenshot to mark it up")
-                .font(.caption)
-                .foregroundColor(.secondary)
-        }
-        .frame(maxWidth: .infinity)
-    }
-
-    private var nameSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Your name")
-                .font(.headline)
-            TextField("Enter your name (asked only once)", text: $testerName)
-                .textFieldStyle(.roundedBorder)
-                .disabled(state == .sending)
-                .focused($focusedField, equals: .name)
-                .submitLabel(.next)
-                .onSubmit { focusNext() }
-        }
-    }
-
-    private func fieldSection(
-        title: String,
-        placeholder: String,
-        text: Binding<String>,
-        field: Field
-    ) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.headline)
-            ZStack(alignment: .topLeading) {
-                if text.wrappedValue.isEmpty {
-                    Text(placeholder)
-                        .foregroundColor(.secondary)
-                        .padding(.top, 8)
-                        .padding(.leading, 5)
+    private var titleItem: some View {
+        HStack(spacing: 8) {
+            let logo = Image(systemName: "pawprint.fill")
+                .resizable()
+                .scaledToFit()
+                .frame(height: 18)
+                .foregroundStyle(.primary)
+            if hasLogoTapHandler {
+                Button {
+                    onClose(.switchTool)
+                } label: {
+                    logo
                 }
-                TextEditor(text: text)
-                    .frame(minHeight: 96)
-                    .disabled(state == .sending)
-                    .focused($focusedField, equals: field)
+                .buttonStyle(.plain)
+                .disabled(state == .sending)
+                .accessibilityLabel("Collie — switch tool")
+            } else {
+                logo.accessibilityLabel("Collie")
             }
-            .padding(4)
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(Color.secondary.opacity(0.3), lineWidth: 1)
-            )
+            Text("What happened?")
+                .font(.headline)
         }
     }
 
@@ -308,6 +423,7 @@ struct BugReportSheet: View {
                 ProgressView()
             } else {
                 Button("Send") { submit() }
+                    .font(.body.weight(.semibold))
                     .disabled(!canSend)
             }
         }
@@ -315,15 +431,32 @@ struct BugReportSheet: View {
 
     // MARK: - Submit
 
+    /// Send, or — on this device's first report — ask who is filing it and then send.
+    ///
+    /// The question is raised here rather than on open, and it is an alert rather than a
+    /// field, because it needs a paragraph of *why*: a name asked for with no reason given
+    /// reads as data collection, and testers answer it with "a" and never look again.
     private func submit() {
         guard canSend else { return }
+        isWriting = false
+        guard !requiresName || !trimmedName.isEmpty else {
+            isAskingName = true
+            return
+        }
+        performSubmit()
+    }
+
+    private func performSubmit() {
+        guard canSend else { return }
         state = .sending
+        isWriting = false
         let name = requiresName ? trimmedName : nil
+        let sent = shots
         Task {
             let outcome = await BugReportComposer.send(
                 whatHappened: trimmedHappened,
                 testerName: name,
-                screenshot: screenshot
+                shots: sent
             )
             await MainActor.run {
                 switch outcome {

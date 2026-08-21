@@ -1,6 +1,7 @@
 package com.collie.firebase
 
 import android.util.Base64
+import com.collie.CollieConfiguration
 import com.collie.CollieOperationResult
 import com.collie.CollieRemoteConfig
 import com.collie.ReportTransport
@@ -24,10 +25,19 @@ import kotlin.coroutines.resumeWithException
  *
  * **Screenshots go to Firestore, not Cloud Storage.** Storage requires a paid Firebase
  * plan; on the free tier it is simply unavailable, which would strand every report at the
- * upload step. So the JPEG is base64-encoded into its *own* document — keeping it out of the
- * report document means listing reports in the panel never drags megabytes of image data
- * along. Firestore caps a document at 1 MiB, so [Configuration.maxScreenshotBytes] bounds the
- * raw JPEG well below that (base64 inflates by ~33%).
+ * upload step. So each JPEG is base64-encoded into a document of its *own* — keeping them out
+ * of the report document means listing reports in the panel never drags megabytes of image
+ * data along. Firestore caps a document at 1 MiB, so [Configuration.maxScreenshotBytes] bounds
+ * each raw JPEG well below that (base64 inflates by ~33%); it is a per-image limit, never a
+ * total, which is exactly why five images need five documents.
+ *
+ * **One document per image, numbered.** A report's images live at
+ * `<screenshotCollection>/<reportId>_0 … _<n-1>` and the report document carries
+ * `screenshotCount: n`. The two travel together by contract: the panel switches shapes on the
+ * presence of `screenshotCount` and then looks *only* at the numbered ids, so writing one
+ * without the other hides every image without an error anywhere. Reports written before this
+ * — a bare `<reportId>` document and no count — keep rendering through the panel's older
+ * path; nothing rewrites them.
  *
  * **Idempotency.** The queue's report id becomes the Firestore *document id*, so a retry
  * after a lost response writes to the same document instead of creating a second report —
@@ -44,7 +54,12 @@ import kotlin.coroutines.resumeWithException
  * **What is written** (`<collection>/<reportId>`):
  * - `app`, `device`, `report`, `telemetry` — the envelope minus its stream, decoded from JSON
  *   so the data is queryable in Firestore rather than an opaque blob.
- * - `hasScreenshot` — whether `<screenshotCollection>/<reportId>` holds the image.
+ * - `hasScreenshot` — whether the report has any image at all (`screenshotCount > 0`), kept
+ *   for the panel's pre-`screenshotCount` path.
+ * - `screenshotCount` — how many screenshot documents were **actually written**, so the panel
+ *   reads exactly the ids that exist.
+ * - `screenshotError` — what went wrong with the images that did not make it; absent when
+ *   they all landed.
  * - `status` — always `"new"`; the panel owns the lifecycle afterwards.
  * - `createdAt` — server timestamp.
  *
@@ -92,9 +107,11 @@ public class FirestoreTransport @JvmOverloads constructor(
          */
         public val maxDocumentBytes: Int = 900_000,
         /**
-         * Upper bound on the RAW screenshot. base64 inflates by ~33%, so this must stay
-         * comfortably under [maxDocumentBytes]. A larger image is dropped and the report
-         * still goes — the text and logs matter more than the picture.
+         * Upper bound on ONE raw screenshot. base64 inflates by ~33%, so this must stay
+         * comfortably under [maxDocumentBytes]. It is deliberately per-image, not a total:
+         * each image gets a document of its own, so five of them never have to share one
+         * document's budget. A larger image is dropped and the report still goes — the text
+         * and logs matter more than the picture.
          */
         public val maxScreenshotBytes: Int = 650_000,
         /**
@@ -103,6 +120,12 @@ public class FirestoreTransport @JvmOverloads constructor(
          * [trimEntries].
          */
         public val maxEntriesBytes: Int = 900_000,
+        /**
+         * How many screenshot documents a report may have. The panel is built around
+         * [CollieConfiguration.MAX_SCREENSHOTS_LIMIT] and ignores anything past it, so this
+         * only ever lowers the count.
+         */
+        public val maxScreenshots: Int = CollieConfiguration.MAX_SCREENSHOTS_LIMIT,
     )
 
     // MARK: - ReportTransport
@@ -110,7 +133,7 @@ public class FirestoreTransport @JvmOverloads constructor(
     override suspend fun upload(
         reportId: String,
         envelope: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): CollieOperationResult<String> {
         // A malformed envelope can never succeed — fail permanently so the queue drops it
         // instead of retrying for 48 hours.
@@ -152,20 +175,30 @@ public class FirestoreTransport @JvmOverloads constructor(
             )
         }
 
-        // 1. Screenshot first: if it fails transiently the whole report is retried, so the
+        // 1. Screenshots first: if one fails transiently the whole report is retried, so the
         //    report document never claims an image that was never written.
-        var hasScreenshot = false
-        if (screenshot != null && screenshot.isNotEmpty()) {
-            if (screenshot.size > configuration.maxScreenshotBytes) {
-                document["screenshotError"] =
-                    "Screenshot dropped: ${screenshot.size} bytes exceeds the " +
+        //
+        //    The slot a document gets is the number written SO FAR, not the tester's position
+        //    in the list. That keeps the written ids contiguous — `_0 … _{n-1}` — which is the
+        //    only shape the panel looks for: it reads that range and nothing else, so an image
+        //    parked at `_3` because `_1` failed would simply never be seen. Partial success is
+        //    a normal outcome here, not an error state: two of three images and a
+        //    `screenshotError` saying what happened to the third is worth far more than no
+        //    report.
+        val images = screenshots.filter { it.isNotEmpty() }.take(configuration.maxScreenshots)
+        var screenshotCount = 0
+        val screenshotErrors = mutableListOf<String>()
+        images.forEachIndexed { position, image ->
+            val label = "Screenshot ${position + 1} of ${images.size}"
+            if (image.size > configuration.maxScreenshotBytes) {
+                screenshotErrors += "$label dropped: ${image.size} bytes exceeds the " +
                     "${configuration.maxScreenshotBytes}-byte Firestore limit"
             } else {
-                when (val result = putScreenshot(screenshot, reportId)) {
-                    is CollieOperationResult.Success -> hasScreenshot = true
-                    // Losing the image must not lose the report.
+                when (val result = putScreenshot(image, reportId, screenshotCount)) {
+                    is CollieOperationResult.Success -> screenshotCount += 1
+                    // Losing an image must not lose the report.
                     is CollieOperationResult.PermanentFailure ->
-                        document["screenshotError"] = result.reason
+                        screenshotErrors += "$label: ${result.reason}"
 
                     is CollieOperationResult.TransientFailure ->
                         return CollieOperationResult.TransientFailure(result.reason)
@@ -220,7 +253,18 @@ public class FirestoreTransport @JvmOverloads constructor(
         }
 
         document["appKey"] = configuration.appKey
-        document["hasScreenshot"] = hasScreenshot
+        // Both fields, always. `screenshotCount` is what a current panel reads; the older
+        // boolean stays beside it so a panel that predates the count still shows that the
+        // report has an image.
+        document["hasScreenshot"] = screenshotCount > 0
+        document["screenshotCount"] = screenshotCount
+        if (screenshotErrors.isEmpty()) {
+            // The write merges, so an error left by a failed earlier attempt would outlive the
+            // retry that finally wrote every image — and contradict the count beside it.
+            document["screenshotError"] = FieldValue.delete()
+        } else {
+            document["screenshotError"] = screenshotErrors.joinToString(" · ")
+        }
         document["status"] = "new"
         document["clientReportId"] = reportId
         document["createdAt"] = FieldValue.serverTimestamp()
@@ -252,6 +296,7 @@ public class FirestoreTransport @JvmOverloads constructor(
             CollieRemoteConfig(
                 captureEnabled = snapshot.getBoolean("captureEnabled") ?: true,
                 maxScreenshotBytes = snapshot.getLong("maxScreenshotBytes")?.toInt(),
+                maxScreenshots = snapshot.getLong("maxScreenshots")?.toInt(),
             )
         }
     } catch (error: Exception) {
@@ -262,18 +307,25 @@ public class FirestoreTransport @JvmOverloads constructor(
     // MARK: - Screenshot
 
     /**
-     * Writes the JPEG as base64 into its own document, keyed by the report id so a retry
-     * overwrites rather than duplicates.
+     * Writes one JPEG as base64 into its own document, keyed by the report id and its slot so
+     * a retry overwrites rather than duplicates.
+     *
+     * `reportId` and `index` travel inside the document as well as in its id: the id is the
+     * panel's lookup key, and the fields are what makes an image traceable back to its report
+     * when someone is looking at the collection itself.
      */
     private suspend fun putScreenshot(
         data: ByteArray,
         reportId: String,
+        index: Int,
     ): CollieOperationResult<Unit> = try {
         firestore.collection(configuration.screenshotCollection)
-            .document(reportId)
+            .document(screenshotDocumentId(reportId, index))
             .set(
                 mapOf(
                     "appKey" to configuration.appKey,
+                    "reportId" to reportId,
+                    "index" to index,
                     "contentType" to "image/jpeg",
                     "byteSize" to data.size,
                     "data" to Base64.encodeToString(data, Base64.NO_WRAP),
@@ -284,7 +336,7 @@ public class FirestoreTransport @JvmOverloads constructor(
             .await()
         CollieOperationResult.Success(Unit)
     } catch (error: Exception) {
-        classify(error, action = "write the screenshot")
+        classify(error, action = "write screenshot $index")
     }
 
     // MARK: - Log stream
@@ -320,6 +372,13 @@ public class FirestoreTransport @JvmOverloads constructor(
     // MARK: - Error classification
 
     internal companion object {
+
+        /**
+         * Document id of a report's [index]-th screenshot. The panel derives the same string
+         * from `screenshotCount`, so the two must never drift apart — and neither may this
+         * and the iOS SDK's `screenshotDocumentID`.
+         */
+        internal fun screenshotDocumentId(reportId: String, index: Int): String = "${reportId}_$index"
 
         // MARK: JSON → Firestore
 

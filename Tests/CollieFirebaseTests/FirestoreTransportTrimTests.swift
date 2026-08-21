@@ -140,4 +140,18 @@ final class FirestoreTransportTrimTests: XCTestCase {
         let withoutStream = try XCTUnwrap(FirestoreTransport.byteSize(of: document))
         XCTAssertLessThan(withoutStream, 900_000)
     }
+
+    // MARK: - Screenshot document ids
+
+    /// The id scheme is a contract with the panel, not an implementation detail: the panel
+    /// sees `screenshotCount: n` and reads exactly `<reportId>_0 … _<n-1>`. Change the
+    /// separator or the numbering base and every image disappears from the panel with no
+    /// error anywhere — which is precisely why it is pinned here.
+    func testScreenshotDocumentIdsAreZeroBasedAndUnderscoreSuffixed() {
+        let reportID = "9F1C2B7A-0000-4000-8000-000000000001"
+        XCTAssertEqual(
+            (0..<3).map { FirestoreTransport.screenshotDocumentID(reportID: reportID, index: $0) },
+            ["\(reportID)_0", "\(reportID)_1", "\(reportID)_2"]
+        )
+    }
 }

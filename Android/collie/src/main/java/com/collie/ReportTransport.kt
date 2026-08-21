@@ -21,7 +21,14 @@ public sealed interface CollieOperationResult<out T> {
  */
 public data class CollieRemoteConfig(
     public val captureEnabled: Boolean,
+    /** Byte limit for **one** screenshot, not for all of them together. */
     public val maxScreenshotBytes: Int? = null,
+    /**
+     * How many screenshots a report may carry. Clamped to
+     * [CollieConfiguration.MAX_SCREENSHOTS_LIMIT] before it is used — the panel cannot
+     * display more than that whatever the server says.
+     */
+    public val maxScreenshots: Int? = null,
 )
 
 /**
@@ -42,16 +49,18 @@ public data class CollieRemoteConfig(
 public interface ReportTransport {
 
     /**
-     * Uploads one report (JSON envelope + optional screenshot); returns the server's
-     * report id on success.
+     * Uploads one report (JSON envelope + its screenshots); returns the server's report id
+     * on success.
      *
      * @param reportId Client-generated idempotency key. Retrying with the same value
      *   must not create a second report server-side.
+     * @param screenshots Zero to [CollieConfiguration.MAX_SCREENSHOTS_LIMIT] JPEGs, in the
+     *   order the tester arranged them. Empty when the report carries no image.
      */
     public suspend fun upload(
         reportId: String,
         envelope: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): CollieOperationResult<String>
 
     /**

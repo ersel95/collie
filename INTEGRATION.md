@@ -185,13 +185,25 @@ opens the report sheet directly (`false`).
 
 ### What a report looks like in Firestore
 
-Three documents, all keyed by the same report id:
+The report and its stream are one document each; the screenshots are one document **per
+image**, all keyed off the same report id:
 
 | Document | Holds |
 |---|---|
-| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `clientReportId`, `createdAt` |
+| `collie_reports/<reportId>` | The envelope minus its stream — `app`, `device`, `report`, `telemetry` — plus `appKey`, `status`, `hasScreenshot`, `screenshotCount`, `clientReportId`, `createdAt` |
 | `collie_report_entries/<reportId>` | `appKey`, `entries` (the full raw stream), `createdAt` |
-| `collie_report_screenshots/<reportId>` | `appKey`, `contentType`, `byteSize`, `data` (base64), `createdAt` |
+| `collie_report_screenshots/<reportId>_<index>` | `appKey`, `reportId`, `index` (0-based), `contentType`, `byteSize`, `data` (base64), `createdAt` |
+
+`screenshotCount` and the numbered ids are **one contract, not two fields**: the panel
+switches shapes on the presence of `screenshotCount` and then reads exactly
+`<reportId>_0 … <reportId>_<count-1>`. Writing the count without the suffixed ids — or the
+ids without the count — hides every image, silently. It counts the documents that were
+**actually written**, so a report whose third image failed says `2` and carries a
+`screenshotError` explaining the third.
+
+Reports filed by an SDK older than iOS 1.18.0 / Android 0.7.0 have no `screenshotCount` and
+a single unsuffixed `collie_report_screenshots/<reportId>`; the panel keeps reading those
+through its older path, and nothing rewrites them.
 
 The stream and the screenshot are kept out of the report document for the same reason: the
 panel's list screen shows four fields per report, and Firestore's web SDK cannot fetch a
@@ -204,11 +216,43 @@ see [`MIGRATION.md`](MIGRATION.md).
 
 ### Screenshots on the Firebase path
 
-Cloud Storage requires a paid Firebase plan, so the JPEG is base64-encoded into its own
-Firestore document (`collie_report_screenshots/<reportId>`) instead. Firestore caps a
-document at 1 MiB, so `FirestoreTransport.Configuration.maxScreenshotBytes` (650 KB)
-bounds the raw image; a larger one is dropped — with the reason recorded on the report —
-rather than failing the whole submission.
+Cloud Storage requires a paid Firebase plan, so each JPEG is base64-encoded into a Firestore
+document of its own (`collie_report_screenshots/<reportId>_<index>`) instead. Firestore caps
+a document at 1 MiB, so `FirestoreTransport.Configuration.maxScreenshotBytes` (650 KB) bounds
+**each** raw image — it is a per-image limit, never a total, which is what lets a report carry
+five of them. A larger one is dropped, with the reason recorded on the report, rather than
+failing the whole submission.
+
+A report carries **0 to 5 images**: the capture taken at shake time, plus whatever the tester
+adds in the form — from the system photo picker (which needs no permission; Collie never
+raises one), or in **screenshot mode**, where the form steps aside so they can walk back
+through the app and photograph each screen with one tap. Every image also leaves a `collie`
+entry in the log stream at the moment it was taken ("Screenshot 2 captured"), so the analyst
+can place each picture on the timeline instead of guessing.
+
+The ceiling is `CollieConfiguration.maxScreenshotsLimit` /
+`CollieConfiguration.MAX_SCREENSHOTS_LIMIT`, and it is shared with the panel, so raising it in
+the SDK alone only uploads images nobody sees. To offer testers *fewer* slots, set
+`maxScreenshots` on `CollieConfiguration`, or `maxScreenshots` on the app's
+`collie_config/<appKey>` document to change it without a new build.
+
+### Screenshots on the HTTPS path
+
+The multipart body carries one part per image. The first keeps the part name it always had —
+`screenshot`, filename `screenshot.jpg` — and each further image is appended as
+`screenshot[<i>]`, filename `screenshot<i>.jpg`, numbered from 1:
+
+```
+report        report.json     application/json   ← the envelope
+screenshot    screenshot.jpg  image/jpeg         ← the shake-time capture
+screenshot[1] screenshot1.jpg image/jpeg         ← attached by the tester
+screenshot[2] screenshot2.jpg image/jpeg
+…
+```
+
+A single-image report is therefore byte-for-byte the request a pre-1.18.0 SDK sent, so an
+existing backend keeps working untouched; one that ignores the extra parts still receives the
+capture the tester started from rather than nothing at all.
 - The queue is retried automatically at app startup. To also retry on returning to the
   foreground:
   ```swift
@@ -236,7 +280,8 @@ turns capture off.
 | Banner disappeared after working before | The app's `captureEnabled` kill switch was turned off in the panel (§7) |
 | "api-key is invalid or disabled (401)" | The api-key is wrong or was rotated — copy the current one from Admin · Apps |
 | HTTP 400 with a validation message | The payload was rejected (e.g. too many log entries). The message carries the backend's reason |
-| "Report is too large (413)" | Screenshot or log payload above the backend limit — lower `screenshotJPEGQuality` / `maxScreenshotBytes` |
+| "Report is too large (413)" | Screenshot or log payload above the backend limit — lower `screenshotJPEGQuality` / `maxScreenshotBytes`, or `maxScreenshots` to carry fewer images |
+| Screenshots missing in the panel, no error anywhere | `screenshotCount` and the `_<index>` document ids must be written together — the panel reads only the numbered ids once the count is present |
 | Report stuck at "queued" | Is the device on VPN? Try reaching the backend from Safari, then call `flushPendingUploads()` |
 | Collie's traffic visible in your network-capture tool | Not expected (separate session); still, add `captureExclusionFragments` to the exclude list |
 | Network view empty in the panel despite logs | The network entries don't carry the expected metadata keys (`method`, `url`, `status`…) — see §5; the raw entries are still there |

@@ -15,11 +15,21 @@ public enum CollieOperationResult<T: Sendable>: Sendable {
 /// reporter off for an app without shipping a new build.
 public struct CollieRemoteConfig: Decodable, Sendable {
     public let captureEnabled: Bool
+    /// Byte limit for **one** screenshot, not for all of them together.
     public let maxScreenshotBytes: Int?
+    /// How many screenshots a report may carry. Clamped to
+    /// `CollieConfiguration.maxScreenshotsLimit` before it is used — the panel cannot
+    /// display more than that whatever the server says.
+    public let maxScreenshots: Int?
 
-    public init(captureEnabled: Bool, maxScreenshotBytes: Int? = nil) {
+    public init(
+        captureEnabled: Bool,
+        maxScreenshotBytes: Int? = nil,
+        maxScreenshots: Int? = nil
+    ) {
         self.captureEnabled = captureEnabled
         self.maxScreenshotBytes = maxScreenshotBytes
+        self.maxScreenshots = maxScreenshots
     }
 }
 
@@ -36,15 +46,18 @@ public struct CollieRemoteConfig: Decodable, Sendable {
 /// - `.permanentFailure` — the same call would fail again (auth, validation, too large).
 /// - `.transientFailure` — worth retrying later (offline, 5xx, timeout).
 public protocol ReportTransport: Sendable {
-    /// Uploads one report (JSON envelope + optional screenshot); returns the server's
-    /// report id on success.
+    /// Uploads one report (JSON envelope + its screenshots); returns the server's report
+    /// id on success.
     ///
-    /// - Parameter reportID: Client-generated idempotency key. Retrying with the same
-    ///   value must not create a second report server-side.
+    /// - Parameters:
+    ///   - reportID: Client-generated idempotency key. Retrying with the same value must
+    ///     not create a second report server-side.
+    ///   - screenshots: Zero to `CollieConfiguration.maxScreenshotsLimit` JPEGs, in the
+    ///     order the tester arranged them. Empty when the report carries no image.
     func upload(
         reportID: String,
         envelope: Data,
-        screenshot: Data?
+        screenshots: [Data]
     ) async -> CollieOperationResult<String>
 
     /// Fetches the server-side kill switch. `nil` when it could not be reached — the
@@ -83,14 +96,14 @@ final class IngestionClient: ReportTransport, @unchecked Sendable {
         let data: Payload
     }
 
-    /// `POST <reportsPath>` — multipart with a `report` JSON part and an optional
-    /// `screenshot` binary part.
+    /// `POST <reportsPath>` — multipart with a `report` JSON part and one binary part per
+    /// screenshot.
     func upload(
         reportID: String,
         envelope: Data,
-        screenshot: Data?
+        screenshots: [Data]
     ) async -> CollieOperationResult<String> {
-        let (body, boundary) = Self.makeMultipartBody(envelope: envelope, screenshot: screenshot)
+        let (body, boundary) = Self.makeMultipartBody(envelope: envelope, screenshots: screenshots)
 
         var request = URLRequest(url: configuration.reportsURL)
         request.httpMethod = "POST"
@@ -185,11 +198,18 @@ final class IngestionClient: ReportTransport, @unchecked Sendable {
     /// Header carrying the client-generated idempotency key.
     static let idempotencyHeader = "x-collie-idempotency-key"
 
-    /// Two-part multipart body. Part names are the backend contract: `report` (JSON) and
-    /// `screenshot` (binary, optional).
+    /// Multipart body: a `report` JSON part plus one binary part per screenshot. Part
+    /// names are the backend contract.
+    ///
+    /// **The first image keeps the name it always had** — `screenshot` /
+    /// `screenshot.jpg` — and any further one is appended as `screenshot[i]` /
+    /// `screenshot<i>.jpg`, numbered from 1. A single-image report is therefore
+    /// byte-for-byte the request every deployed backend already parses, and one that
+    /// knows nothing about the extra parts still receives the capture the tester started
+    /// from instead of nothing at all. The scheme is documented in `INTEGRATION.md` §6.
     static func makeMultipartBody(
         envelope: Data,
-        screenshot: Data?
+        screenshots: [Data]
     ) -> (body: Data, boundary: String) {
         let boundary = "CollieBoundary-\(UUID().uuidString)"
         var body = Data()
@@ -212,10 +232,12 @@ final class IngestionClient: ReportTransport, @unchecked Sendable {
             mimeType: "application/json",
             data: envelope
         )
-        if let screenshot, !screenshot.isEmpty {
+        // Filtered before numbering: an empty image must not consume index 0 and leave the
+        // request without the part every backend looks for.
+        for (index, screenshot) in screenshots.filter({ !$0.isEmpty }).enumerated() {
             appendPart(
-                name: "screenshot",
-                filename: "screenshot.jpg",
+                name: index == 0 ? "screenshot" : "screenshot[\(index)]",
+                filename: index == 0 ? "screenshot.jpg" : "screenshot\(index).jpg",
                 mimeType: "image/jpeg",
                 data: screenshot
             )

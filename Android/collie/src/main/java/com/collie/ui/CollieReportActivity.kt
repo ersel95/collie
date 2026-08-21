@@ -37,7 +37,10 @@ internal class CollieReportActivity : ComponentActivity() {
             return
         }
 
-        val screenshot = CollieUi.pendingScreenshot
+        // The shake-time capture is the report's first image; the tester can add more from
+        // the system photo picker inside the form.
+        val screenshots = listOfNotNull(CollieUi.pendingScreenshot)
+        val maxScreenshots = service.maxScreenshots
         val requiresName = !CollieDeviceIdentity.hasStoredName(this)
         val hasLogoTapHandler = CollieUi.logoTapHandler != null
 
@@ -48,18 +51,19 @@ internal class CollieReportActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
 
             BugReportScreen(
-                screenshot = screenshot,
+                screenshots = screenshots,
+                maxScreenshots = maxScreenshots,
                 requiresName = requiresName,
                 hasLogoTapHandler = hasLogoTapHandler,
                 state = state,
-                onSubmit = { whatHappened, testerName, image ->
+                onSubmit = { whatHappened, testerName, images ->
                     state = SubmitState.Sending
                     scope.launch {
                         val outcome = BugReportComposer.send(
                             context = this@CollieReportActivity,
                             whatHappened = whatHappened,
                             testerName = testerName,
-                            screenshot = image,
+                            screenshots = images,
                         )
                         when (outcome) {
                             is CollieSubmitOutcome.Sent -> close(ReportOutcome.Sent(outcome.reportId))

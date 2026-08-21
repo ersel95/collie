@@ -74,16 +74,16 @@ final class IngestionClientTests: XCTestCase {
 
     // MARK: - Multipart body
 
-    private func bodyString(envelope: String, screenshot: Data?) -> String {
+    private func bodyString(envelope: String, screenshots: [Data]) -> String {
         let (body, _) = IngestionClient.makeMultipartBody(
             envelope: envelope.data(using: .utf8)!,
-            screenshot: screenshot
+            screenshots: screenshots
         )
         return String(decoding: body, as: UTF8.self)
     }
 
     func testMultipartCarriesTheReportPart() {
-        let text = bodyString(envelope: #"{"entries":[]}"#, screenshot: nil)
+        let text = bodyString(envelope: #"{"entries":[]}"#, screenshots: [])
         XCTAssertTrue(text.contains(#"name="report""#))
         XCTAssertTrue(text.contains(#"filename="report.json""#))
         XCTAssertTrue(text.contains("Content-Type: application/json"))
@@ -91,20 +91,44 @@ final class IngestionClientTests: XCTestCase {
     }
 
     func testMultipartCarriesTheScreenshotPartWhenPresent() {
-        let text = bodyString(envelope: "{}", screenshot: Data([0xFF, 0xD8, 0xFF, 0xE0]))
+        let text = bodyString(envelope: "{}", screenshots: [Data([0xFF, 0xD8, 0xFF, 0xE0])])
         XCTAssertTrue(text.contains(#"name="screenshot""#))
         XCTAssertTrue(text.contains(#"filename="screenshot.jpg""#))
         XCTAssertTrue(text.contains("Content-Type: image/jpeg"))
     }
 
+    /// The FIRST image keeps the part name every deployed backend already parses; the
+    /// rest are appended under indexed names. A backend that knows nothing about the extra
+    /// parts still receives the shake-time capture instead of nothing at all.
+    func testFurtherScreenshotsAreNumberedAndTheFirstKeepsItsName() {
+        let text = bodyString(
+            envelope: "{}",
+            screenshots: [Data([0x01]), Data([0x02]), Data([0x03])]
+        )
+        XCTAssertTrue(text.contains(#"name="screenshot""#))
+        XCTAssertTrue(text.contains(#"filename="screenshot.jpg""#))
+        XCTAssertTrue(text.contains(#"name="screenshot[1]""#))
+        XCTAssertTrue(text.contains(#"filename="screenshot1.jpg""#))
+        XCTAssertTrue(text.contains(#"name="screenshot[2]""#))
+        XCTAssertTrue(text.contains(#"filename="screenshot2.jpg""#))
+    }
+
+    /// An empty image must not consume index 0 — the request would then reach the backend
+    /// without the part it looks for and arrive picture-less for no reason.
+    func testEmptyScreenshotsDoNotConsumeAnIndex() {
+        let text = bodyString(envelope: "{}", screenshots: [Data(), Data([0x01])])
+        XCTAssertTrue(text.contains(#"name="screenshot""#))
+        XCTAssertFalse(text.contains(#"name="screenshot[1]""#))
+    }
+
     func testScreenshotPartIsOmittedWhenMissingOrEmpty() {
-        XCTAssertFalse(bodyString(envelope: "{}", screenshot: nil).contains(#"name="screenshot""#))
-        XCTAssertFalse(bodyString(envelope: "{}", screenshot: Data()).contains(#"name="screenshot""#))
+        XCTAssertFalse(bodyString(envelope: "{}", screenshots: []).contains(#"name="screenshot""#))
+        XCTAssertFalse(bodyString(envelope: "{}", screenshots: [Data()]).contains(#"name="screenshot""#))
     }
 
     func testBoundaryIsUniquePerBodyAndTerminated() {
-        let (body1, boundary1) = IngestionClient.makeMultipartBody(envelope: Data("{}".utf8), screenshot: nil)
-        let (_, boundary2) = IngestionClient.makeMultipartBody(envelope: Data("{}".utf8), screenshot: nil)
+        let (body1, boundary1) = IngestionClient.makeMultipartBody(envelope: Data("{}".utf8), screenshots: [])
+        let (_, boundary2) = IngestionClient.makeMultipartBody(envelope: Data("{}".utf8), screenshots: [])
 
         XCTAssertNotEqual(boundary1, boundary2)
         let text = String(decoding: body1, as: UTF8.self)

@@ -1,5 +1,130 @@
 # Changelog
 
+## 1.18.0 — 2026-08-21
+
+### Added
+- **A report can carry up to five screenshots.** One picture was the whole evidence a
+  tester could attach, and a bug rarely lives on one screen: the state two steps back, the
+  notification that started it, the other app the data came from — all of that had to be
+  described in prose, or filed as a second report.
+
+  The shake-time capture still arrives attached, exactly as before. Beside it now sits a
+  thumbnail per image — each one removable, each one tappable into the markup editor — and
+  two ways to add another: **Screenshot** (below) and **Upload**, which opens the system
+  photo picker. That picker is `PHPickerViewController`, which runs out of process, so it
+  needs **no** photo-library permission and raises no prompt: Collie asking for the photo
+  library would teach testers to decline, and a request without a usage description crashes
+  the host.
+
+  Markup still only ever *replaces* the image it was opened for, addressed by id rather
+  than position: the tester can remove a thumbnail while another is being marked up, and
+  the result still lands on the right picture.
+
+- `CollieConfiguration.maxScreenshots` (default 5, clamped to
+  `CollieConfiguration.maxScreenshotsLimit`) and a `maxScreenshots` key in the remote
+  config, so an app can be given fewer slots without a new build.
+  `BugReportService.maxScreenshots` is the stricter of the two, and the form stops offering
+  to add one there.
+
+- **Screenshot mode.** A bug is rarely one screen, and the shake happens where the tester
+  *noticed* it — often two screens after the one an analyst needs. **Screenshot** in the
+  form hands the app back: a bar across the top says the mode is on and returns to the
+  report, a shutter sits in the bottom-right corner, and everything between them belongs to
+  the host app. The tester navigates to each screen worth reporting and taps once. At five
+  images the mode ends and the form comes back on its own.
+
+  Nothing about the report is at risk during that trip: the sentence, the name and the
+  images already attached live outside the form, so it can be dismissed on the way in and
+  rebuilt on the way out.
+
+- **Every screenshot leaves a marker in the log stream** (`CollieScreenshotEvent`): a
+  `collie` entry at the instant it was taken — "Screenshot 2 captured" — merged into the
+  stream at its chronological position like every other Collie marker. Five pictures taken
+  minutes apart were otherwise a row of thumbnails with no place in a timeline that is
+  stamped to the second; now a screenshot can be read against the request that failed just
+  before it. An image the tester deleted leaves no marker, and one picked from the library
+  says "attached", not "captured" — it was taken at some earlier, unknown time.
+
+  `BugReportService.sendReport` gains `screenshotEvents:` for it. The parameter has a
+  default, so existing call sites keep compiling.
+
+### Changed
+- **The report form is the form testers already know.** One title, then the whole page as a
+  single writing surface with the keyboard already up, and the evidence riding directly
+  above the keyboard instead of competing with the text for room. The screenshots sit there
+  as a row of thumbnails — each removable with ✕, each tappable into the markup editor —
+  beside the two ways to add another.
+
+  The old layout asked for a description inside a boxed field halfway down a scrolling form,
+  with the pictures below it where the keyboard covered them. Testers write one sentence and
+  send; the sentence should be the page.
+
+- **The name is asked in an alert, with a reason.** It used to be a placeholder above the
+  description — "Your name (asked only once)" — which says what to type and not one word
+  about why. Now the first **Send** raises an alert that explains it: reports from every test
+  device land in one list, and the name is what says which one this came from. Answer it and
+  the send carries straight on.
+
+  Nothing asks before the tester has written anything, and the button stays "Send" for
+  everyone who has already answered.
+
+- **Firestore: one document per image, numbered.** A report's images are written to
+  `collie_report_screenshots/<reportId>_0 … _<n-1>` and the report document gains
+  `screenshotCount`. The two are one contract with the panel: it switches shapes on the
+  count and then reads only the numbered ids. The count is how many documents were
+  *actually written*, so a report whose third image failed says `2` and explains the third
+  in `screenshotError` — a partial set of pictures and a working report beats no report.
+
+  `maxScreenshotBytes` (650 KB on the Firestore path) is now explicitly **per image**. It
+  always was a per-document limit; with five documents that finally matters.
+
+  Nothing existing is rewritten. Reports already in Firestore have no `screenshotCount` and
+  a single unsuffixed document, and the panel keeps reading them through its older path.
+  The security rules need no change either — `Integration/firestore.rules` matches a
+  suffixed id and does not object to the new `index` / `reportId` fields.
+
+- **HTTPS: one multipart part per image.** The first keeps the name it has always had —
+  `screenshot` / `screenshot.jpg` — so a single-image request is byte-for-byte what a
+  deployed backend already parses; further images are `screenshot[i]` / `screenshot<i>.jpg`,
+  numbered from 1. A backend that ignores the extra parts still receives the capture the
+  tester started from. The scheme is in `INTEGRATION.md` §6.
+
+- **Breaking — `ReportTransport`.** `upload(reportID:envelope:screenshot:)` becomes
+  `upload(reportID:envelope:screenshots:)`, taking `[Data]`. Hosts that ship their own
+  transport must update the signature; hosts using `IngestionClient` or `FirestoreTransport`
+  need no change. `BugReportService.sendReport` takes `screenshotsJPEG: [Data]` for the
+  same reason.
+
+- The upload queue writes `<id>.screenshot.<index>` files and records `screenshotCount` in
+  its envelope. `hasScreenshot` stays in that envelope and the unsuffixed file name is
+  still read and still deleted: a report queued off-VPN is read back by whatever build is
+  installed when the connection returns, and losing its image to an app update would be a
+  silent loss of the thing the tester filed the report for.
+
+- `PrivacyInfo.xcprivacy` now declares **Photos or Videos** alongside the existing types,
+  because a report may carry an image the tester picked from their library. No new API
+  access is declared — the out-of-process picker needs none.
+
+### Fixed
+- **A tester could be asked their name on every single report, forever.** The name is kept
+  in the Keychain so it survives a reinstall — but a build without the Keychain entitlement
+  (an unsigned harness, some enterprise re-signing setups) has that write refused with
+  `errSecMissingEntitlement`, and nothing read the status, so it failed silently and
+  `hasStoredName` stayed false. `KeychainStore` now checks, says so through `diagnostics`,
+  and falls back to `UserDefaults`: wiped on reinstall, which is worse than the Keychain and
+  far better than being asked every time.
+
+- **The app underneath Collie's overlay was not actually interactive.** `UIView.hitTest`
+  returns *self* when no subview wants a point, and a `UIWindow` is a view — so Collie's
+  overlay window answered "mine" for every touch its content had already declined, and the
+  host app could not be touched while the banner was up. It had been documented as working
+  since the banner shipped. `PassthroughWindow` now returns `nil` for those points, which is
+  what lets UIKit try the next window down — and is what makes screenshot mode possible at
+  all.
+
+Android 0.7.0 carries the multi-screenshot half of this — the same document shape, the
+same limit. The new form, screenshot mode and the capture markers are iOS-only for now.
+
 ## 1.17.0 — 2026-08-18
 
 ### Fixed

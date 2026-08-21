@@ -36,9 +36,15 @@ bridge feeds those reports into the same panel. Only that product pulls in the F
 Tester shakes the device
   → ShakeDetector fires; ScreenRenderer renders the key window (secure fields stay masked)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
-  → [Yes] → Form: "What happened?" (+ name on first use)
-  → Tap the screenshot → markup opens: circle the problem, Done
-  → Backend: POST <reportsPath>  (multipart: report JSON + screenshot, x-collie-api-key)
+  → [Yes] → Form: "What happened?" — the whole page is the field, the evidence
+            sits on the keyboard
+  → First Send on this device: an alert asks the tester's name, and says why
+  → Tap a thumbnail → markup opens: circle the problem, Done
+  → [Screenshot] → the form steps aside: walk the app, tap the shutter on each
+                   screen worth reporting (up to 5 in all)
+  → [Upload] → the same 5 slots, filled from the photo picker (no permission needed)
+  → Backend: POST <reportsPath>  (multipart: report JSON + one part per screenshot,
+                                  x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff
   → Panel: analyst triages the report and pushes it to Jira
 ```
@@ -53,7 +59,7 @@ right person.
 ## Features
 
 - **One request per report** — a multipart upload carrying the JSON envelope (app/device
-  meta, the description, all log entries, telemetry) and the screenshot. The
+  meta, the description, all log entries, telemetry) and the report's screenshots. The
   api-key both identifies the app and authenticates the upload.
 - **Opt-in + fail-closed** — off by default; if any required field is missing, nothing
   runs at all.
@@ -66,10 +72,19 @@ right person.
   to the same report.
 - **Screenshot safety** — the screen is captured at shake time with secure text field
   masks preserved via `drawHierarchy(afterScreenUpdates: true)`; informed-consent notice
-  in the form; progressive JPEG compression down to the size limit.
-- **Markup** — tapping the preview in the form opens the editor straight away: the
+  in the form; progressive JPEG compression down to the size limit, applied per image.
+- **Up to five images per report** — the shake-time capture, plus whatever the tester adds:
+  the screen two steps back, the notification that started it, the other app the data came
+  from. Two ways in, and neither asks for a permission: **screenshot mode**, where the form
+  steps aside and a shutter follows the tester through the app so they can photograph each
+  screen as they reach it, and the system **photo picker**. Any image can be marked up or
+  removed before sending.
+- **Each picture lands on the timeline** — every image leaves a `collie` entry in the log
+  stream at the moment it was taken ("Screenshot 2 captured"). Five screenshots taken minutes
+  apart are otherwise a row of thumbnails beside a log that is stamped to the second.
+- **Markup** — tapping a thumbnail in the form opens the editor straight away: the
   screenshot, a PencilKit canvas over it, and a pen / marker / eraser palette with three
-  widths and six colours. Done flattens the marks into the screenshot, so the analyst sees
+  widths and six colours. Done flattens the marks into that image, so the analyst sees
   exactly what the tester circled. One tap in, one tap out; nothing is uploaded until the
   form is sent.
 - **Lossless logs** — ALL entries travel with the report, categories preserved, nothing

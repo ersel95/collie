@@ -3,9 +3,11 @@
 Collie: an SPM bug-reporter package for iOS test builds — shake → banner → form →
 **a report in the analyst panel**. An analyst triages it there and pushes it to Jira,
 choosing the issue type, parent, assignee and labels. A screenshot is captured
-automatically at shake time — the tester can mark it up in the form before sending — and
-uploaded with the report, together with the full log stream fed from the host's logging
-library (any source).
+automatically at shake time; in the form the tester can mark it up, remove it, and add up
+to four more — either from their photo library or by walking back through the app in
+**screenshot mode**, photographing each screen that matters. All of them are uploaded with
+the report, together with the full log stream fed from the host's logging library (any
+source).
 
 **Two transports, one destination.** `Collie` uploads over plain HTTPS
 (`IngestionClient`); the separate **`CollieFirebase`** product writes to Firestore
@@ -99,6 +101,44 @@ validation).
     so a response lost in transit cannot create a second report (`UploadQueueTests`).
   - The screenshot is rendered at shake time with `drawHierarchy(afterScreenUpdates: true)`
     (the secure-field mask depends on it).
+  - **Screenshot mode** (`ScreenshotModeOverlay`) is the second way in, and it only works
+    because the app underneath stays usable: the tester leaves the form, navigates the host
+    app, and taps a shutter on each screen worth reporting. Three things make that hold, and
+    all three have already been got wrong once:
+    - `PassthroughWindow` returns `nil` from `hitTest` for a point nothing on Collie's layer
+      wants. A `UIWindow` is a `UIView`, so without this it answers "mine" for every touch
+      its content declined, and the app below is frozen — which is what the banner's
+      "the app stays interactive" comment claimed for a long time without it being true.
+    - The overlay declines those points itself, the same way, so only its bar and its
+      shutter take touches.
+    - The form's state lives in `BugReportBanner.draft`, not in the form: the sheet is
+      dismissed on the way into the mode and rebuilt on the way out. A reporter that loses
+      the tester's sentence when they go and photograph the bug gets used once.
+    The mode needs no cooperation from `ScreenRenderer` — that only ever draws windows below
+    `.alert`, and Collie's overlay sits above it, so the bar and shutter cannot appear in a
+    capture.
+  - The tester's name is asked **once**, in an alert on the first Send, and it explains why
+    it is being asked — a name demanded with no reason given gets answered "a". It is kept in
+    the Keychain (survives reinstall), with a `UserDefaults` fallback for builds the Keychain
+    refuses: without the entitlement `SecItemAdd` fails, and it used to fail *silently*, so
+    the question came back on every report.
+  - **Every image leaves a marker in the log stream** (`CollieScreenshotEvent`): a `collie`
+    entry at the moment it was taken, numbered by its position in the report as sent. Five
+    pictures taken minutes apart are otherwise a row of thumbnails with no place in a
+    timeline that is stamped to the second. Deleted images produce no marker, and a library
+    image says "attached", not "captured" — it was taken at some earlier, unknown time.
+  - A report carries **0 to 5 screenshots**: the shake-time capture plus whatever the tester
+    attaches in the form. Two things hold that together and neither may move on its own.
+    `screenshotCount` on the report document and the `_<index>`-suffixed screenshot document
+    ids are ONE contract with the panel — it switches shapes on the count and then reads only
+    the numbered ids, so writing one without the other hides every image with no error
+    anywhere. And the ceiling (`CollieConfiguration.maxScreenshotsLimit`, 5) is the panel's
+    `MAX_SCREENSHOTS`: raising it here alone uploads images nobody can open.
+    `maxScreenshotBytes` is per image, never a total — each one gets a document of its own.
+  - Attaching an image uses `PHPickerViewController` (`ScreenshotPicker`), which runs out of
+    process and therefore needs **no** photo-library permission. That is the same rule the
+    telemetry permissions follow: Collie never raises a prompt, and a request without a usage
+    description would crash the host outright.
   - Markup (`ScreenshotMarkupEditor`) is **one screen, in Collie's own window**: a
     `PKCanvasView` over the screenshot plus `MarkupPalette`, Collie's own tool/width/colour
     bar. One tap on the preview opens it, Done flattens the strokes into the screenshot at
@@ -156,13 +196,16 @@ validation).
     `didBecomeActive`) — `UNUserNotificationCenter.current()` also traps in a process
     without an app bundle, which is what the macOS test run is, hence the UIKit guard.
 - Backend assumptions:
-  - HTTPS — `POST <reportsPath>` (multipart: `report` JSON part + optional `screenshot`
-    part, `x-collie-api-key` header) and `GET <configPath>`; both overridable via
-    `CollieConfiguration`.
+  - HTTPS — `POST <reportsPath>` (multipart: `report` JSON part + one part per screenshot,
+    `x-collie-api-key` header) and `GET <configPath>`; both overridable via
+    `CollieConfiguration`. The first image keeps the part name `screenshot` /
+    `screenshot.jpg` it has always had, so a single-image request is unchanged on the wire;
+    further ones are `screenshot[i]` / `screenshot<i>.jpg`, numbered from 1.
   - Firebase — `collie_reports/<reportId>` (envelope decoded, plus `appKey`, `status`,
-    `hasScreenshot`), the raw log stream in `collie_report_entries/<reportId>`, the
-    screenshot base64 in `collie_report_screenshots/<reportId>` (Cloud Storage needs a paid
-    plan, so it is NOT used), and the kill switch in `collie_config/<appKey>`. Collections
+    `hasScreenshot`, `screenshotCount`), the raw log stream in
+    `collie_report_entries/<reportId>`, each screenshot's base64 in
+    `collie_report_screenshots/<reportId>_<index>` (Cloud Storage needs a paid plan, so it
+    is NOT used), and the kill switch in `collie_config/<appKey>`. Collections
     are overridable via `FirestoreTransport.Configuration`. Rule templates:
     `Integration/firestore.rules`. Moving an existing writer onto the split shape:
     [`MIGRATION.md`](MIGRATION.md).

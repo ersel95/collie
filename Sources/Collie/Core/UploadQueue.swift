@@ -24,12 +24,40 @@ public enum CollieSubmitOutcome: Sendable, Equatable {
 actor UploadQueue {
 
     /// A pending report envelope stored on disk.
+    ///
+    /// Both screenshot fields are optional and both are written, because the file on disk
+    /// outlives the build that wrote it: a report queued while the tester was off VPN is
+    /// read back by whatever version of the app is installed when the connection returns.
     private struct Envelope: Codable {
         let id: String
         var attempt: Int
         let createdAt: Date
         var nextAttemptAt: Date
-        let hasScreenshot: Bool
+        /// Written by every build. Pre-multi-screenshot ones wrote *only* this, alongside
+        /// a single unsuffixed `<id>.screenshot` file.
+        let hasScreenshot: Bool?
+        /// How many `<id>.screenshot.<index>` files this envelope has. Absent on a file
+        /// left by a build that predates multiple screenshots.
+        let screenshotCount: Int?
+
+        init(id: String, attempt: Int, createdAt: Date, nextAttemptAt: Date, screenshotCount: Int) {
+            self.id = id
+            self.attempt = attempt
+            self.createdAt = createdAt
+            self.nextAttemptAt = nextAttemptAt
+            self.hasScreenshot = screenshotCount > 0
+            self.screenshotCount = screenshotCount
+        }
+
+        /// How many screenshot files to expect. An older envelope's `true` means one.
+        var screenshots: Int {
+            if let screenshotCount { return screenshotCount }
+            return hasScreenshot == true ? 1 : 0
+        }
+
+        /// Were the files written under the old, unsuffixed name? Only the absence of
+        /// `screenshotCount` says so — the flag alone cannot tell the two shapes apart.
+        var usesLegacyScreenshotName: Bool { screenshotCount == nil }
     }
 
     private enum StepOutcome {
@@ -88,18 +116,19 @@ actor UploadQueue {
     /// - Transient failure → the report is queued to disk, `.queued`.
     /// - Permanent failure → `.rejected` (not written to disk — the same error would just
     ///   repeat).
-    func submit(reportBody: Data, screenshot: Data?) async -> CollieSubmitOutcome {
+    func submit(reportBody: Data, screenshots: [Data]) async -> CollieSubmitOutcome {
+        let images = screenshots.filter { !$0.isEmpty }
         var envelope = Envelope(
             id: UUID().uuidString,
             attempt: 0,
             createdAt: Date(),
             nextAttemptAt: Date(),
-            hasScreenshot: screenshot?.isEmpty == false
+            screenshotCount: images.count
         )
         let outcome = await perform(
             envelope: &envelope,
             reportBody: reportBody,
-            screenshot: screenshot
+            screenshots: images
         )
         switch outcome {
         case .done(let reportID):
@@ -110,7 +139,7 @@ actor UploadQueue {
         case .transient(let reason):
             diag("Report could not be sent, queued: \(reason)")
             envelope.nextAttemptAt = Date().addingTimeInterval(configuration.baseRetryDelay)
-            persist(envelope: envelope, reportBody: reportBody, screenshot: screenshot)
+            persist(envelope: envelope, reportBody: reportBody, screenshots: images)
             return .queued
         }
     }
@@ -135,12 +164,12 @@ actor UploadQueue {
             guard let reportBody = readFile(envelope.id, kind: .report) else {
                 remove(envelope); continue
             }
-            let screenshot = envelope.hasScreenshot ? readFile(envelope.id, kind: .screenshot) : nil
+            let screenshots = readScreenshots(envelope)
 
             let outcome = await perform(
                 envelope: &envelope,
                 reportBody: reportBody,
-                screenshot: screenshot
+                screenshots: screenshots
             )
             switch outcome {
             case .done(let reportID):
@@ -185,12 +214,12 @@ actor UploadQueue {
     private func perform(
         envelope: inout Envelope,
         reportBody: Data,
-        screenshot: Data?
+        screenshots: [Data]
     ) async -> StepOutcome {
         switch await transport.upload(
             reportID: envelope.id,
             envelope: reportBody,
-            screenshot: screenshot
+            screenshots: screenshots
         ) {
         case .success(let reportID):
             return .done(reportID: reportID)
@@ -203,24 +232,39 @@ actor UploadQueue {
 
     // MARK: - Disk
 
-    private enum FileKind: String {
-        case report = "report"
-        case screenshot = "screenshot"
+    private enum FileKind {
+        case report
+        case screenshot(index: Int)
+        /// The single unsuffixed name written before a report could carry several images.
+        /// Still read and still deleted — a queue file survives the app update that
+        /// changed the naming.
+        case legacyScreenshot
+
+        var suffix: String {
+            switch self {
+            case .report: return "report"
+            case .screenshot(let index): return "screenshot.\(index)"
+            case .legacyScreenshot: return "screenshot"
+            }
+        }
     }
 
     private func fileURL(_ id: String, kind: FileKind) -> URL {
-        directory.appendingPathComponent("\(id).\(kind.rawValue)")
+        directory.appendingPathComponent("\(id).\(kind.suffix)")
     }
 
     private func envelopeURL(_ id: String) -> URL {
         directory.appendingPathComponent("\(id).json")
     }
 
-    private func persist(envelope: Envelope, reportBody: Data, screenshot: Data?) {
+    private func persist(envelope: Envelope, reportBody: Data, screenshots: [Data]) {
         do {
             try reportBody.write(to: fileURL(envelope.id, kind: .report), options: Self.writeOptions)
-            if envelope.hasScreenshot, let screenshot {
-                try screenshot.write(to: fileURL(envelope.id, kind: .screenshot), options: Self.writeOptions)
+            for (index, screenshot) in screenshots.enumerated() {
+                try screenshot.write(
+                    to: fileURL(envelope.id, kind: .screenshot(index: index)),
+                    options: Self.writeOptions
+                )
             }
         } catch {
             remove(envelope)
@@ -238,10 +282,31 @@ actor UploadQueue {
         try? Data(contentsOf: fileURL(id, kind: kind))
     }
 
+    /// Reads the queued screenshots back in the order they were persisted.
+    ///
+    /// A file that has gone missing is skipped rather than aborting the report: the
+    /// tester's words and the log stream are worth more than one image, and the transport
+    /// is told how many it actually got.
+    private func readScreenshots(_ envelope: Envelope) -> [Data] {
+        let count = envelope.screenshots
+        guard count > 0 else { return [] }
+        if envelope.usesLegacyScreenshotName {
+            return [readFile(envelope.id, kind: .legacyScreenshot)].compactMap { $0 }
+        }
+        return (0..<count).compactMap { readFile(envelope.id, kind: .screenshot(index: $0)) }
+    }
+
     private func remove(_ envelope: Envelope) {
         try? fileManager.removeItem(at: envelopeURL(envelope.id))
-        for kind in [FileKind.report, .screenshot] {
-            try? fileManager.removeItem(at: fileURL(envelope.id, kind: kind))
+        try? fileManager.removeItem(at: fileURL(envelope.id, kind: .report))
+        // The legacy name too: an envelope written by an older build points at it, and a
+        // partially written newer one can have more files than its count admits. Sweeping
+        // the whole slot range is a handful of `unlink` calls against a leaked screenshot
+        // sitting in the cache directory until the OS reclaims it.
+        try? fileManager.removeItem(at: fileURL(envelope.id, kind: .legacyScreenshot))
+        let slots = max(envelope.screenshots, CollieConfiguration.maxScreenshotsLimit)
+        for index in 0..<slots {
+            try? fileManager.removeItem(at: fileURL(envelope.id, kind: .screenshot(index: index)))
         }
     }
 

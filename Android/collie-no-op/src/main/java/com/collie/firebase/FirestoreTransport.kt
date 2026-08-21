@@ -1,5 +1,6 @@
 package com.collie.firebase
 
+import com.collie.CollieConfiguration
 import com.collie.CollieOperationResult
 import com.collie.CollieRemoteConfig
 import com.collie.ReportTransport
@@ -33,12 +34,13 @@ public class FirestoreTransport @JvmOverloads constructor(
         public val maxDocumentBytes: Int = 900_000,
         public val maxScreenshotBytes: Int = 650_000,
         public val maxEntriesBytes: Int = 900_000,
+        public val maxScreenshots: Int = CollieConfiguration.MAX_SCREENSHOTS_LIMIT,
     )
 
     override suspend fun upload(
         reportId: String,
         envelope: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): CollieOperationResult<String> =
         CollieOperationResult.PermanentFailure("Collie is not present in this build")
 

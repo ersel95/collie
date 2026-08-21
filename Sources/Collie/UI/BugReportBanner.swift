@@ -15,7 +15,11 @@ final class BugReportBanner {
     private var window: UIWindow?
     private var shakeObserver: NSObjectProtocol?
     private var autoDismissTask: Task<Void, Never>?
-    private var pendingScreenshot: UIImage?
+    /// What the tester has entered. Owned here rather than by the form, because the form
+    /// steps aside for screenshot mode and comes back — see `enterScreenshotMode`.
+    private var draft = BugReportDraft()
+    /// The screenshot-mode controls, while that mode is up.
+    private var screenshotOverlay: ScreenshotModeOverlay?
 
     /// Handler for taps on the Collie logo in the report sheet's navigation bar
     /// (set via `Collie.onLogoTap`). When set, the logo becomes a switch-tool button.
@@ -76,8 +80,17 @@ final class BugReportBanner {
         // Don't repeat while a banner/sheet is already visible.
         guard window == nil else { return }
         // Capture the screen before the Collie window appears (Collie's own alert-level
-        // windows are excluded from the render anyway).
-        pendingScreenshot = ScreenRenderer.renderKeyWindow()
+        // windows are excluded from the render anyway). This first image is the report's
+        // screenshot 1; the tester adds the rest from the form.
+        draft = BugReportDraft()
+        if let captured = ScreenRenderer.renderKeyWindow() {
+            draft.shots = [
+                BugReportShot(
+                    image: captured,
+                    event: CollieScreenshotEvent(date: Date(), source: .captured)
+                )
+            ]
+        }
         guard installWindow() else { return }
         if askFirst {
             presentBanner()
@@ -90,11 +103,16 @@ final class BugReportBanner {
     private func installWindow() -> Bool {
         guard let scene = Self.activeScene() else { return false }
 
-        let window = UIWindow(windowScene: scene)
+        let window = PassthroughWindow(windowScene: scene)
         window.windowLevel = .alert + 1
         window.backgroundColor = .clear
         let container = PassthroughViewController()
         container.view.backgroundColor = .clear
+        // The banner and screenshot mode both leave the app usable on purpose, so nothing
+        // in this window should claim to be modal. See the note in `ScreenshotModeOverlay`:
+        // this is necessary but not proven sufficient for VoiceOver, because Collie's
+        // window sits above the app's.
+        container.view.accessibilityViewIsModal = false
         window.rootViewController = container
         window.makeKeyAndVisible()
         self.window = window
@@ -139,6 +157,8 @@ final class BugReportBanner {
     private func dismissBanner() {
         autoDismissTask?.cancel()
         autoDismissTask = nil
+        removeScreenshotOverlay()
+        draft = BugReportDraft()
         window?.isHidden = true
         window = nil
     }
@@ -148,13 +168,23 @@ final class BugReportBanner {
         autoDismissTask = nil
         guard let container = window?.rootViewController else { return }
 
-        let screenshot = pendingScreenshot
         let host = UIHostingController(
             rootView: BugReportSheet(
-                screenshot: screenshot,
+                draft: draft,
                 onClose: { [weak self] outcome in
-                    self?.window?.rootViewController?.dismiss(animated: true) {
-                        self?.dismissBanner()
+                    guard let self else { return }
+                    // Screenshot mode is the one outcome that does NOT end the flow: the
+                    // form is dismissed but the window, and everything the tester has
+                    // written, stay put until they come back.
+                    if case .captureScreenshots(let draft) = outcome {
+                        self.draft = draft
+                        self.window?.rootViewController?.dismiss(animated: true) {
+                            self.enterScreenshotMode()
+                        }
+                        return
+                    }
+                    self.window?.rootViewController?.dismiss(animated: true) {
+                        self.dismissBanner()
                         switch outcome {
                         case .cancelled:
                             break
@@ -167,7 +197,9 @@ final class BugReportBanner {
                         case .switchTool:
                             // Invoked AFTER the Collie UI has fully closed, so the handler
                             // can safely present another diagnostics tool.
-                            self?.logoTapHandler?()
+                            self.logoTapHandler?()
+                        case .captureScreenshots:
+                            break   // handled above
                         }
                     }
                 }
@@ -182,11 +214,104 @@ final class BugReportBanner {
         container.present(host, animated: true)
     }
 
+    // MARK: - Screenshot mode
+
+    /// Hands the app back to the tester with two controls on top of it: a bar that returns
+    /// to the form, and a shutter that photographs whatever is on screen.
+    ///
+    /// The form is gone but the flow is not — `draft` holds the sentence, the name and the
+    /// images already attached, and the overlay window stays up so nothing about the report
+    /// can be lost while the tester walks around the app.
+    private func enterScreenshotMode() {
+        guard let container = window?.rootViewController as? PassthroughViewController else {
+            return
+        }
+        let overlay = ScreenshotModeOverlay(
+            onExit: { [weak self] in self?.leaveScreenshotMode() },
+            onCapture: { [weak self] in self?.captureInScreenshotMode() }
+        )
+        overlay.translatesAutoresizingMaskIntoConstraints = false
+        container.view.addSubview(overlay)
+        NSLayoutConstraint.activate([
+            overlay.leadingAnchor.constraint(equalTo: container.view.leadingAnchor),
+            overlay.trailingAnchor.constraint(equalTo: container.view.trailingAnchor),
+            overlay.topAnchor.constraint(equalTo: container.view.topAnchor),
+            overlay.bottomAnchor.constraint(equalTo: container.view.bottomAnchor)
+        ])
+        overlay.setCount(draft.shots.count, of: maxScreenshots)
+        screenshotOverlay = overlay
+        // The overlay decides for itself which touches it wants; everything else goes to
+        // the app, which is the whole point of the mode.
+        container.transparentHost = overlay
+        container.passthroughHost = nil
+    }
+
+    private func captureInScreenshotMode() {
+        guard let overlay = screenshotOverlay else { return }
+        let limit = maxScreenshots
+        guard draft.shots.count < limit else { return }
+
+        // `ScreenRenderer` only ever draws windows below `.alert`, and this overlay sits
+        // above that — so the bar and the shutter cannot appear in the image, and there is
+        // nothing to hide before rendering.
+        guard let image = ScreenRenderer.renderKeyWindow() else {
+            Collie.diag("Screenshot mode: nothing could be rendered.")
+            return
+        }
+        draft.shots.append(
+            BugReportShot(
+                image: image,
+                event: CollieScreenshotEvent(date: Date(), source: .captured)
+            )
+        )
+        overlay.flash()
+        overlay.setCount(draft.shots.count, of: limit)
+
+        // At the limit there is nothing more to do here, and leaving the tester in a mode
+        // whose only control is disabled reads as a bug. Back to the form.
+        if draft.shots.count >= limit {
+            leaveScreenshotMode()
+        }
+    }
+
+    private func leaveScreenshotMode() {
+        removeScreenshotOverlay()
+        presentSheet()
+    }
+
+    private func removeScreenshotOverlay() {
+        screenshotOverlay?.removeFromSuperview()
+        screenshotOverlay = nil
+        (window?.rootViewController as? PassthroughViewController)?.transparentHost = nil
+    }
+
+    private var maxScreenshots: Int {
+        Collie.bugReportService?.maxScreenshots ?? CollieConfiguration.maxScreenshotsLimit
+    }
+
     private static func activeScene() -> UIWindowScene? {
         UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }
             .first { $0.activationState == .foregroundActive }
             ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    }
+}
+
+// MARK: - Passthrough window
+
+/// Collie's overlay window, which must not swallow the touches it does not want.
+///
+/// `UIView.hitTest` returns **self** when no subview claims a point, and a `UIWindow` is a
+/// view: so a window whose content declines a touch still answers "mine", and the touch
+/// never reaches the app's own window underneath. That is invisible until something below
+/// has to stay usable — the banner leaving the app interactive, and screenshot mode, where
+/// the tester has to navigate the app being photographed. Returning `nil` for a point
+/// nothing on this layer wants is what lets UIKit try the next window down.
+@MainActor
+private final class PassthroughWindow: UIWindow {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let result = super.hitTest(point, with: event)
+        return result === self ? nil : result
     }
 }
 
@@ -197,7 +322,15 @@ final class BugReportBanner {
 /// modal sheet is presented).
 @MainActor
 private final class PassthroughViewController: UIViewController {
+    /// A view whose *bounds* decide: touches inside it are captured, the rest pass through.
+    /// This is the banner, which occupies a known rectangle.
     weak var passthroughHost: UIView?
+
+    /// A full-screen view that decides for *itself*, by returning `nil` from its own
+    /// `hitTest` for the parts it does not want. This is screenshot mode, which covers the
+    /// screen but only wants two controls on it — a bounds check would hand it every touch
+    /// and freeze the app the tester is trying to photograph.
+    weak var transparentHost: UIView?
 
     override func loadView() {
         view = PassthroughView()
@@ -209,11 +342,19 @@ private final class PassthroughViewController: UIViewController {
             guard let self else { return defaultResult() }
             // If a modal is presented (sheet open): normal hit-test (whole window interactive).
             guard self.presentedViewController == nil else { return defaultResult() }
-            // No banner view: pass touches through to the app underneath.
-            guard let host = self.passthroughHost else { return nil }
-            // Capture only touches that hit banner subviews; the rest go to the app.
-            let converted = host.convert(point, from: self.view)
-            return host.point(inside: converted, with: event) ? defaultResult() : nil
+            if let host = self.passthroughHost {
+                // Capture only touches that hit banner subviews; the rest go to the app.
+                let converted = host.convert(point, from: self.view)
+                return host.point(inside: converted, with: event) ? defaultResult() : nil
+            }
+            if self.transparentHost != nil {
+                // The host already refused this point if it did not want it, so a result of
+                // `self.view` means nothing on this layer wants the touch.
+                let result = defaultResult()
+                return result === self.view ? nil : result
+            }
+            // Nothing on this layer: pass touches through to the app underneath.
+            return nil
         }
     }
 }

@@ -35,20 +35,50 @@ internal class UploadQueue(
     private val directory: File,
 ) {
 
-    /** A pending report envelope stored on disk. */
+    /**
+     * A pending report envelope stored on disk.
+     *
+     * Both screenshot fields are written and both are optional on the way back in, because
+     * the file outlives the build that wrote it: a report queued while the tester was off
+     * VPN is read back by whatever version of the app is installed when the connection
+     * returns.
+     */
     private data class Envelope(
         val id: String,
         var attempt: Int,
         val createdAtMillis: Long,
         var nextAttemptAtMillis: Long,
-        val hasScreenshot: Boolean,
+        /**
+         * How many `<id>.screenshot.<index>` files this envelope has, or `null` on a file
+         * left by a build that predates multiple screenshots.
+         */
+        val screenshotCount: Int?,
+        /**
+         * Written by every build. Pre-multi-screenshot ones wrote *only* this, alongside a
+         * single unsuffixed `<id>.screenshot` file.
+         */
+        val hasScreenshot: Boolean = (screenshotCount ?: 0) > 0,
     ) {
+        /** How many screenshot files to expect. An older envelope's `true` means one. */
+        val screenshots: Int get() = screenshotCount ?: if (hasScreenshot) 1 else 0
+
+        /**
+         * Were the files written under the old, unsuffixed name? Only the absence of
+         * `screenshotCount` says so — the flag alone cannot tell the two shapes apart.
+         */
+        val usesLegacyScreenshotName: Boolean get() = screenshotCount == null
+
         fun toJson(): String = JSONObject()
             .put("id", id)
             .put("attempt", attempt)
             .put("createdAt", createdAtMillis)
             .put("nextAttemptAt", nextAttemptAtMillis)
             .put("hasScreenshot", hasScreenshot)
+            // Only when this envelope HAS a count. A legacy one is rewritten on every failed
+            // retry, and writing a count it never had would flip it onto the indexed file
+            // names — which its screenshot, sitting under the old unsuffixed name, does not
+            // have. The image would vanish on the next attempt.
+            .apply { screenshotCount?.let { put("screenshotCount", it) } }
             .toString()
 
         companion object {
@@ -59,7 +89,12 @@ internal class UploadQueue(
                     attempt = json.getInt("attempt"),
                     createdAtMillis = json.getLong("createdAt"),
                     nextAttemptAtMillis = json.getLong("nextAttemptAt"),
-                    hasScreenshot = json.getBoolean("hasScreenshot"),
+                    screenshotCount = if (json.has("screenshotCount")) {
+                        json.getInt("screenshotCount")
+                    } else {
+                        null
+                    },
+                    hasScreenshot = json.optBoolean("hasScreenshot", false),
                 )
             }.getOrNull()
         }
@@ -90,16 +125,20 @@ internal class UploadQueue(
      * - Permanent failure → [CollieSubmitOutcome.Rejected] (not written to disk — the same
      *   error would just repeat).
      */
-    internal suspend fun submit(reportBody: ByteArray, screenshot: ByteArray?): CollieSubmitOutcome {
+    internal suspend fun submit(
+        reportBody: ByteArray,
+        screenshots: List<ByteArray>,
+    ): CollieSubmitOutcome {
+        val images = screenshots.filter { it.isNotEmpty() }
         val envelope = Envelope(
             id = UUID.randomUUID().toString(),
             attempt = 0,
             createdAtMillis = System.currentTimeMillis(),
             nextAttemptAtMillis = System.currentTimeMillis(),
-            hasScreenshot = screenshot != null && screenshot.isNotEmpty(),
+            screenshotCount = images.size,
         )
 
-        return when (val outcome = perform(envelope, reportBody, screenshot)) {
+        return when (val outcome = perform(envelope, reportBody, images)) {
             is StepOutcome.Done -> CollieSubmitOutcome.Sent(outcome.reportId)
 
             is StepOutcome.Rejected -> {
@@ -111,7 +150,7 @@ internal class UploadQueue(
                 diag("Report could not be sent, queued: ${outcome.reason}")
                 envelope.nextAttemptAtMillis =
                     System.currentTimeMillis() + configuration.baseRetryDelayMillis
-                mutex.withLock { persist(envelope, reportBody, screenshot) }
+                mutex.withLock { persist(envelope, reportBody, images) }
                 CollieSubmitOutcome.Queued
             }
         }
@@ -144,13 +183,9 @@ internal class UploadQueue(
                     remove(envelope)
                     continue
                 }
-                val screenshot = if (envelope.hasScreenshot) {
-                    readFile(envelope.id, FileKind.SCREENSHOT)
-                } else {
-                    null
-                }
+                val screenshots = readScreenshots(envelope)
 
-                when (val outcome = perform(envelope, reportBody, screenshot)) {
+                when (val outcome = perform(envelope, reportBody, screenshots)) {
                     is StepOutcome.Done -> {
                         diag("Queued report sent: ${outcome.reportId}")
                         remove(envelope)
@@ -215,13 +250,13 @@ internal class UploadQueue(
     private suspend fun perform(
         envelope: Envelope,
         reportBody: ByteArray,
-        screenshot: ByteArray?,
+        screenshots: List<ByteArray>,
     ): StepOutcome {
         val result = withTimeoutOrNull(configuration.requestTimeoutMillis) {
             transport.upload(
                 reportId = envelope.id,
                 envelope = reportBody,
-                screenshot = screenshot,
+                screenshots = screenshots,
             )
         } ?: CollieOperationResult.TransientFailure(
             "Upload timed out after ${configuration.requestTimeoutMillis} ms",
@@ -238,18 +273,26 @@ internal class UploadQueue(
 
     private enum class FileKind(val extension: String) {
         REPORT("report"),
-        SCREENSHOT("screenshot"),
+
+        /**
+         * The single unsuffixed name written before a report could carry several images.
+         * Still read and still deleted — a queue file survives the app update that changed
+         * the naming.
+         */
+        LEGACY_SCREENSHOT("screenshot"),
     }
 
     private fun file(id: String, kind: FileKind) = File(directory, "$id.${kind.extension}")
 
+    private fun screenshotFile(id: String, index: Int) = File(directory, "$id.screenshot.$index")
+
     private fun envelopeFile(id: String) = File(directory, "$id.json")
 
-    private fun persist(envelope: Envelope, reportBody: ByteArray, screenshot: ByteArray?) {
+    private fun persist(envelope: Envelope, reportBody: ByteArray, screenshots: List<ByteArray>) {
         val written = runCatching {
             file(envelope.id, FileKind.REPORT).writeBytes(reportBody)
-            if (envelope.hasScreenshot && screenshot != null) {
-                file(envelope.id, FileKind.SCREENSHOT).writeBytes(screenshot)
+            screenshots.forEachIndexed { index, screenshot ->
+                screenshotFile(envelope.id, index).writeBytes(screenshot)
             }
         }.isSuccess
 
@@ -267,9 +310,37 @@ internal class UploadQueue(
     private fun readFile(id: String, kind: FileKind): ByteArray? =
         runCatching { file(id, kind).takeIf { it.exists() }?.readBytes() }.getOrNull()
 
+    /**
+     * Reads the queued screenshots back in the order they were persisted.
+     *
+     * A file that has gone missing is skipped rather than aborting the report: the tester's
+     * words and the log stream are worth more than one image, and the transport is told how
+     * many it actually got.
+     */
+    private fun readScreenshots(envelope: Envelope): List<ByteArray> {
+        val count = envelope.screenshots
+        if (count <= 0) return emptyList()
+        if (envelope.usesLegacyScreenshotName) {
+            return listOfNotNull(readFile(envelope.id, FileKind.LEGACY_SCREENSHOT))
+        }
+        return (0 until count).mapNotNull { index ->
+            runCatching {
+                screenshotFile(envelope.id, index).takeIf { it.exists() }?.readBytes()
+            }.getOrNull()
+        }
+    }
+
     private fun remove(envelope: Envelope) {
         runCatching { envelopeFile(envelope.id).delete() }
+        // The legacy name too: an envelope written by an older build points at it, and a
+        // partially written newer one can have more files than its count admits. Sweeping
+        // the whole slot range is a handful of deletes against a leaked screenshot sitting
+        // in the cache directory until the OS reclaims it.
         FileKind.entries.forEach { kind -> runCatching { file(envelope.id, kind).delete() } }
+        val slots = maxOf(envelope.screenshots, CollieConfiguration.MAX_SCREENSHOTS_LIMIT)
+        for (index in 0 until slots) {
+            runCatching { screenshotFile(envelope.id, index).delete() }
+        }
     }
 
     private fun loadEnvelopes(): List<Envelope> =

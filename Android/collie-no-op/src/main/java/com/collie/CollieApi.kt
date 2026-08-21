@@ -73,6 +73,19 @@ public class CollieConfiguration(
     }
 }
 
+/** Same shape as the real event; a release build never records one. */
+public data class CollieScreenshotEvent(
+    public val epochMillis: Long,
+    public val source: Source,
+) {
+    public enum class Source { CAPTURED, GALLERY }
+
+    public companion object {
+        public fun markerEntries(events: List<CollieScreenshotEvent>): List<CollieLogEntry> =
+            emptyList()
+    }
+}
+
 /** Same shape as the real entry; a release build simply never asks for a snapshot. */
 public data class CollieLogEntry(
     public val epochMillis: Long,
@@ -229,6 +242,7 @@ public class BugReportService private constructor() {
         whatHappened: String,
         testerName: String?,
         screenshotsJpeg: List<ByteArray>,
+        screenshotEvents: List<CollieScreenshotEvent> = emptyList(),
         identity: CollieDeviceIdentity,
         telemetry: CollieTelemetry? = null,
     ): CollieSubmitOutcome = CollieSubmitOutcome.Rejected("Collie is not present in this build")

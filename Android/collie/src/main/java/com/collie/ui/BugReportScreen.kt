@@ -2,11 +2,13 @@ package com.collie.ui
 
 import android.graphics.Bitmap
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,21 +16,19 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.foundation.layout.width
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -37,6 +37,8 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -45,13 +47,15 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -59,6 +63,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import com.collie.CollieScreenshotEvent
 
 /** Why the report screen closed (the caller shows a toast accordingly). */
 internal sealed interface ReportOutcome {
@@ -71,6 +76,12 @@ internal sealed interface ReportOutcome {
      * switch-tool handler.
      */
     data object SwitchTool : ReportOutcome
+
+    /**
+     * The tester wants to photograph the app: close the form — keeping everything in the
+     * draft — and enter screenshot mode.
+     */
+    data object CaptureScreenshots : ReportOutcome
 }
 
 /** Submission state, driving the send button and the inline error. */
@@ -81,79 +92,107 @@ internal sealed interface SubmitState {
 }
 
 /**
- * One attached image. Identified rather than addressed by position: the tester can remove
- * the second thumbnail while the third is being marked up, and an index would then write the
- * result onto the wrong image.
+ * One image the report is carrying: the picture itself, plus when it arrived and where from —
+ * the two facts the analyst needs and the tester never types.
+ *
+ * Identified rather than addressed by position: the tester can remove the second thumbnail
+ * while the third is being marked up, and an index would then write the result onto the wrong
+ * image.
  */
-private data class Shot(val id: Long, val bitmap: Bitmap)
+internal data class BugReportShot(
+    val id: Long = nextId++,
+    val bitmap: Bitmap,
+    val event: CollieScreenshotEvent,
+) {
+    companion object {
+        private var nextId: Long = 0
+    }
+}
 
 /**
- * One trip through the photo picker, carrying its own id.
+ * Everything the tester has entered so far.
  *
- * The id is what makes it a *new* request every time rather than a value that happens to
- * differ: picking the same two images twice produces an equal URI list, and an effect keyed
- * on the list alone would not run the second time.
+ * It lives outside the screen because the screen is **not** the only one in this flow: the
+ * tester leaves it for screenshot mode, walks through the app, and comes back to a new
+ * instance of the activity. What they had already written has to survive that.
  */
-private data class PickRequest(val id: Long, val uris: List<android.net.Uri>)
+internal data class BugReportDraft(
+    val whatHappened: String = "",
+    val testerName: String = "",
+    val shots: List<BugReportShot> = emptyList(),
+)
 
 /**
  * The bug report screen. Reached from the banner's **Yes**.
  *
- * - One field: **"What happened?"**.
- * - On first use (no stored name) a **name** field is shown as well (one time only).
- * - **Screenshots**, up to [maxScreenshots] of them: the shake-time capture arrives already
- *   attached, and the tester can add more from the system photo picker, mark any of them up,
- *   or remove one. Tapping a thumbnail opens Collie's markup editor; what comes back
- *   replaces that thumbnail in place.
- * - **Send** is active once the description — and, if required, the name — is filled.
+ * The layout is the one a tester already knows from reporting a problem in a social app: a
+ * title, the whole screen as one writing surface, and the evidence sitting on the keyboard
+ * rather than competing with the text for room.
+ *
+ * - **Title**: "What happened?" — so the field itself needs no label.
+ * - Everything below is **one text field**, focused on open, with the keyboard already up.
+ *   The name, needed once per device, is asked in a dialog on the first **Send** — where
+ *   there is room to say *why* it is being asked, which a placeholder never managed.
+ * - Above the keyboard: the report's screenshots as thumbnails (each removable, each tappable
+ *   into the markup editor), and two buttons — **Screenshot** hands the app back so the tester
+ *   can photograph other screens, **Upload** opens the system photo picker. Both stop at
+ *   [maxScreenshots].
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun BugReportScreen(
-    screenshots: List<Bitmap>,
+    draft: BugReportDraft,
     maxScreenshots: Int,
     requiresName: Boolean,
     hasLogoTapHandler: Boolean,
     state: SubmitState,
-    onSubmit: (whatHappened: String, testerName: String?, screenshots: List<Bitmap>) -> Unit,
+    onDraftChanged: (BugReportDraft) -> Unit,
+    onSubmit: (draft: BugReportDraft) -> Unit,
     onClose: (ReportOutcome) -> Unit,
 ) {
-    var whatHappened by remember { mutableStateOf("") }
-    var testerName by remember { mutableStateOf("") }
-    val shots = remember {
-        mutableStateListOf<Shot>().apply {
-            screenshots.forEachIndexed { index, bitmap -> add(Shot(index.toLong(), bitmap)) }
-        }
-    }
-    var nextShotId by remember { mutableStateOf(screenshots.size.toLong()) }
+    var whatHappened by remember { mutableStateOf(draft.whatHappened) }
+    var testerName by remember { mutableStateOf(draft.testerName) }
+    val shots = remember { mutableStateListOf<BugReportShot>().apply { addAll(draft.shots) } }
     var markupShotId by remember { mutableStateOf<Long?>(null) }
+    var isAskingName by remember { mutableStateOf(false) }
     /** What the picker returned, decoded off the main thread by the effect below. */
     var pickRequest by remember { mutableStateOf<PickRequest?>(null) }
     var nextPickId by remember { mutableStateOf(0L) }
     val focusManager = LocalFocusManager.current
     val context = LocalContext.current
+    val editorFocus = remember { FocusRequester() }
 
     val sending = state is SubmitState.Sending
-    val canSend = whatHappened.isNotBlank() && (!requiresName || testerName.isNotBlank()) && !sending
+    val canSend = whatHappened.isNotBlank() && !sending
     val room = (maxScreenshots - shots.size).coerceAtLeast(0)
 
-    // Decoding is I/O and can be slow for a full-resolution photo, so it never runs inside
-    // the picker callback: the result comes back as URIs and turns into bitmaps here.
-    //
-    // The effect must NOT clear `pickRequest` on its way in. Writing the state it is keyed on
-    // cancels the very coroutine doing the decoding — which is exactly what happened, and the
-    // picked images silently never arrived. The request simply stays put until the next one
-    // replaces it.
+    fun currentDraft() = BugReportDraft(
+        whatHappened = whatHappened,
+        testerName = testerName,
+        shots = shots.toList(),
+    )
+
+    // Decoding is I/O and can be slow for a full-resolution photo, so it never runs inside the
+    // picker callback. The effect must NOT clear `pickRequest` on its way in: writing the state
+    // it is keyed on cancels the very coroutine doing the decoding, and the picked images
+    // silently never arrive.
     LaunchedEffect(pickRequest) {
         val uris = pickRequest?.uris ?: return@LaunchedEffect
         val space = (maxScreenshots - shots.size).coerceAtLeast(0)
         uris.take(space).forEach { uri ->
-            // An image that cannot be decoded is skipped, not fatal: the rest of the
-            // selection still reaches the form.
+            // An image that cannot be decoded is skipped, not fatal: the rest of the selection
+            // still reaches the form.
             ScreenshotPicker.load(context, uri)?.let { bitmap ->
                 if (shots.size < maxScreenshots) {
-                    shots += Shot(nextShotId, bitmap)
-                    nextShotId += 1
+                    shots += BugReportShot(
+                        bitmap = bitmap,
+                        // A gallery image was taken at some earlier, unknown time; what the
+                        // stream can honestly record is when it was attached.
+                        event = CollieScreenshotEvent(
+                            epochMillis = System.currentTimeMillis(),
+                            source = CollieScreenshotEvent.Source.GALLERY,
+                        ),
+                    )
                 }
             }
         }
@@ -163,9 +202,7 @@ internal fun BugReportScreen(
     // the tester gets the single-item picker instead of being offered a choice the form would
     // then have to throw half of away.
     val multiplePicker = rememberLauncherForActivityResult(
-        remember(room) {
-            ActivityResultContracts.PickMultipleVisualMedia(room.coerceAtLeast(2))
-        },
+        remember(room) { ActivityResultContracts.PickMultipleVisualMedia(room.coerceAtLeast(2)) },
     ) { uris ->
         pickRequest = PickRequest(nextPickId, uris)
         nextPickId += 1
@@ -179,9 +216,7 @@ internal fun BugReportScreen(
 
     fun addScreenshots() {
         focusManager.clearFocus()
-        val request = androidx.activity.result.PickVisualMediaRequest(
-            ActivityResultContracts.PickVisualMedia.ImageOnly,
-        )
+        val request = PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
         if (room <= 1) singlePicker.launch(request) else multiplePicker.launch(request)
     }
 
@@ -208,6 +243,24 @@ internal fun BugReportScreen(
         return
     }
 
+    LaunchedEffect(Unit) {
+        // The tester came here to write a sentence; opening with the keyboard down costs them
+        // a tap and hides the attachment bar, which lives above it.
+        if (!sending) runCatching { editorFocus.requestFocus() }
+    }
+
+    if (isAskingName) {
+        NameDialog(
+            name = testerName,
+            onNameChange = { testerName = it },
+            onConfirm = {
+                isAskingName = false
+                onSubmit(currentDraft())
+            },
+            onDismiss = { isAskingName = false },
+        )
+    }
+
     CollieTheme {
         Scaffold(
             topBar = {
@@ -216,7 +269,7 @@ internal fun BugReportScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             CollieLogo(
                                 modifier = Modifier
-                                    .size(22.dp)
+                                    .size(20.dp)
                                     .then(
                                         if (hasLogoTapHandler) {
                                             Modifier
@@ -232,8 +285,8 @@ internal fun BugReportScreen(
                                     ),
                                 tint = MaterialTheme.colorScheme.onSurface,
                             )
-                            Spacer(Modifier.size(12.dp))
-                            Text("Report a Problem")
+                            Spacer(Modifier.size(10.dp))
+                            Text("What happened?")
                         }
                     },
                     navigationIcon = {
@@ -254,63 +307,28 @@ internal fun BugReportScreen(
                             TextButton(
                                 onClick = {
                                     focusManager.clearFocus()
-                                    onSubmit(
-                                        whatHappened.trim(),
-                                        testerName.trim().takeIf { requiresName && it.isNotEmpty() },
-                                        shots.map { it.bitmap },
-                                    )
+                                    // The name is asked for — and explained — after Send, and
+                                    // the flow carries straight on from the dialog.
+                                    if (requiresName && testerName.isBlank()) {
+                                        isAskingName = true
+                                    } else {
+                                        onSubmit(currentDraft())
+                                    }
                                 },
                                 enabled = canSend,
-                            ) { Text("Send") }
+                            ) {
+                                Text("Send", fontWeight = FontWeight.SemiBold)
+                            }
                         }
                     },
                 )
             },
-        ) { padding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding)
-                    .verticalScroll(rememberScrollState())
-                    .padding(20.dp),
-                verticalArrangement = Arrangement.spacedBy(20.dp),
-            ) {
-                if (requiresName) {
-                    LabelledField(
-                        title = "Your name",
-                        placeholder = "Enter your name (asked only once)",
-                        value = testerName,
-                        onValueChange = { testerName = it },
-                        enabled = !sending,
-                        singleLine = true,
-                        imeAction = ImeAction.Next,
-                        onImeAction = { focusManager.moveFocus(androidx.compose.ui.focus.FocusDirection.Down) },
-                    )
-                }
-
-                LabelledField(
-                    title = "What happened?",
-                    placeholder = "Describe the problem you ran into…",
-                    value = whatHappened,
-                    onValueChange = { whatHappened = it },
-                    enabled = !sending,
-                    singleLine = false,
-                    imeAction = ImeAction.Default,
-                    onImeAction = { focusManager.clearFocus() },
-                )
-
-                if (state is SubmitState.Failed) {
-                    ErrorBanner(state.message)
-                }
-
-                // Below the inputs on purpose: the keyboard covers the bottom of the screen,
-                // and what the tester needs to reach is the text field, not the thumbnails.
-                //
-                // Hidden entirely when the report may carry no image at all (a host or server
-                // that turned them off): an empty row with a dead "Add" tile would be a
-                // promise the transport does not keep.
+            bottomBar = {
+                // The attachment bar rides the keyboard: `imePadding` lifts it to sit directly
+                // above the IME while typing, and it falls back to the navigation bar when the
+                // keyboard goes away.
                 if (maxScreenshots > 0) {
-                    ScreenshotRow(
+                    AttachmentBar(
                         shots = shots,
                         limit = maxScreenshots,
                         enabled = !sending,
@@ -319,113 +337,178 @@ internal fun BugReportScreen(
                             markupShotId = shot.id
                         },
                         onRemove = { shot -> shots.removeAll { it.id == shot.id } },
-                        onAdd = ::addScreenshots,
+                        onCapture = {
+                            focusManager.clearFocus()
+                            onDraftChanged(currentDraft())
+                            onClose(ReportOutcome.CaptureScreenshots)
+                        },
+                        onUpload = ::addScreenshots,
                     )
                 }
-
-                Spacer(Modifier.height(8.dp))
+            },
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(padding),
+            ) {
+                if (state is SubmitState.Failed) {
+                    ErrorBanner(state.message)
+                }
+                // The whole screen is the field — nothing above it, nothing beside it.
+                TextField(
+                    value = whatHappened,
+                    onValueChange = { whatHappened = it },
+                    placeholder = { Text("Describe what happened, or what did not work.") },
+                    enabled = !sending,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .focusRequester(editorFocus),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = Color.Transparent,
+                        unfocusedContainerColor = Color.Transparent,
+                        disabledContainerColor = Color.Transparent,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent,
+                    ),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Default),
+                )
             }
         }
-    }
-}
-
-@Composable
-private fun LabelledField(
-    title: String,
-    placeholder: String,
-    value: String,
-    onValueChange: (String) -> Unit,
-    enabled: Boolean,
-    singleLine: Boolean,
-    imeAction: ImeAction,
-    onImeAction: () -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-        OutlinedTextField(
-            value = value,
-            onValueChange = onValueChange,
-            placeholder = { Text(placeholder) },
-            enabled = enabled,
-            singleLine = singleLine,
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(if (singleLine) Modifier else Modifier.heightIn(min = 120.dp)),
-            keyboardOptions = KeyboardOptions(imeAction = imeAction),
-            keyboardActions = KeyboardActions(
-                onNext = { onImeAction() },
-                onDone = { onImeAction() },
-            ),
-        )
     }
 }
 
 /**
- * The attached screenshots, in a row that scrolls when it outgrows the screen. Tapping one
- * opens the markup editor — the tester can circle the problem instead of describing where it
- * is — and the tile at the end adds more, until the limit is reached and it disappears.
+ * One trip through the photo picker, carrying its own id.
+ *
+ * The id is what makes it a *new* request every time rather than a value that happens to
+ * differ: picking the same two images twice produces an equal URI list, and an effect keyed on
+ * the list alone would not run the second time.
+ */
+private data class PickRequest(val id: Long, val uris: List<android.net.Uri>)
+
+/**
+ * The one-time name question.
+ *
+ * A dialog rather than a field, and raised by Send rather than by opening the form, because it
+ * needs a sentence of *why*: a name asked for with no reason given reads as data collection,
+ * and testers answer it with "a" and never look again.
  */
 @Composable
-private fun ScreenshotRow(
-    shots: List<Shot>,
+private fun NameDialog(
+    name: String,
+    onNameChange: (String) -> Unit,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("One thing first") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    "Reports from every test device land in one list. Your name says which " +
+                        "one this came from — asked once, stored on this device.",
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = onNameChange,
+                    placeholder = { Text("Your name") },
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm, enabled = name.isNotBlank()) {
+                Text("Save and send")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("Cancel") }
+        },
+    )
+}
+
+/**
+ * The attached screenshots and the two ways to add another, directly above the keyboard.
+ */
+@Composable
+private fun AttachmentBar(
+    shots: List<BugReportShot>,
     limit: Int,
     enabled: Boolean,
-    onMarkUp: (Shot) -> Unit,
-    onRemove: (Shot) -> Unit,
-    onAdd: () -> Unit,
+    onMarkUp: (BugReportShot) -> Unit,
+    onRemove: (BugReportShot) -> Unit,
+    onCapture: () -> Unit,
+    onUpload: () -> Unit,
 ) {
-    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "Screenshots",
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight.SemiBold,
-            )
-            Spacer(Modifier.weight(1f))
-            Text(
-                "${shots.size}/$limit",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+    val room = (limit - shots.size).coerceAtLeast(0)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surfaceContainerLow)
+            .imePadding()
+            .navigationBarsPadding()
+            .padding(vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        if (shots.isNotEmpty()) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState())
+                    .padding(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                shots.forEach { shot ->
+                    ScreenshotThumbnail(
+                        shot = shot,
+                        enabled = enabled,
+                        onMarkUp = { onMarkUp(shot) },
+                        onRemove = { onRemove(shot) },
+                    )
+                }
+            }
         }
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                // Room for the remove badge, which sits half outside the thumbnail.
-                .padding(vertical = 6.dp),
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(horizontal = 16.dp),
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            shots.forEach { shot ->
-                ScreenshotThumbnail(
-                    shot = shot,
-                    enabled = enabled,
-                    onMarkUp = { onMarkUp(shot) },
-                    onRemove = { onRemove(shot) },
-                )
-            }
-            if (shots.size < limit) {
-                AddScreenshotTile(enabled = enabled, onAdd = onAdd)
-            }
+            AttachmentButton("Screenshot", enabled && room > 0, onCapture, Modifier.weight(1f))
+            AttachmentButton("Upload", enabled && room > 0, onUpload, Modifier.weight(1f))
         }
-        Text(
-            if (shots.isEmpty()) {
-                "Add a screenshot to show what you saw."
-            } else {
-                "Tap a screenshot to mark it up."
-            },
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
     }
 }
 
 @Composable
+private fun AttachmentButton(
+    title: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    Text(
+        text = title,
+        style = MaterialTheme.typography.bodyMedium,
+        fontWeight = FontWeight.Medium,
+        color = MaterialTheme.colorScheme.onSurface.copy(alpha = if (enabled) 1f else 0.4f),
+        modifier = modifier
+            .clip(RoundedCornerShape(12.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f))
+            .clickable(enabled = enabled, onClick = onClick)
+            .padding(vertical = 12.dp),
+        textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+    )
+}
+
+@Composable
 private fun ScreenshotThumbnail(
-    shot: Shot,
+    shot: BugReportShot,
     enabled: Boolean,
     onMarkUp: () -> Unit,
     onRemove: () -> Unit,
@@ -437,10 +520,10 @@ private fun ScreenshotThumbnail(
             contentScale = ContentScale.Crop,
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(12.dp))
-                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
+                .clip(RoundedCornerShape(8.dp))
+                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
                 .clickable(enabled = enabled, onClick = onMarkUp)
-                .semantics { contentDescription = "Screenshot — tap to mark up" },
+                .semantics { contentDescription = "Screenshot — tap to mark it up" },
         )
         Icon(
             imageVector = Icons.Filled.Edit,
@@ -448,70 +531,43 @@ private fun ScreenshotThumbnail(
             tint = MaterialTheme.colorScheme.onPrimary,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(6.dp)
+                .padding(4.dp)
                 .clip(RoundedCornerShape(50))
                 .background(MaterialTheme.colorScheme.primary)
-                .padding(4.dp)
-                .size(14.dp),
+                .padding(3.dp)
+                .size(11.dp),
         )
-        // Drawn after the image, so it is the one that receives a tap on the corner it
-        // covers — removing an image must never open the editor instead.
+        // Drawn after the image, so it is the one that receives a tap on the corner it covers
+        // — removing an image must never open the editor instead.
         Icon(
             imageVector = Icons.Filled.Close,
             contentDescription = "Remove screenshot",
             tint = Color.White,
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(4.dp)
+                .padding(2.dp)
                 .clip(RoundedCornerShape(50))
-                .background(Color.Black.copy(alpha = 0.55f))
+                .background(Color.Black.copy(alpha = 0.6f))
                 .clickable(enabled = enabled, onClick = onRemove)
-                .padding(3.dp)
-                .size(16.dp),
-        )
-    }
-}
-
-@Composable
-private fun AddScreenshotTile(enabled: Boolean, onAdd: () -> Unit) {
-    Column(
-        modifier = Modifier
-            .size(width = THUMBNAIL_WIDTH, height = THUMBNAIL_HEIGHT)
-            .clip(RoundedCornerShape(12.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f))
-            .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-            .clickable(enabled = enabled, onClick = onAdd)
-            .semantics { contentDescription = "Add a screenshot" },
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center,
-    ) {
-        Icon(
-            imageVector = Icons.Filled.Add,
-            contentDescription = null,
-            tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(28.dp),
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            "Add",
-            style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.primary,
+                .padding(2.dp)
+                .size(13.dp),
         )
     }
 }
 
 /**
- * Portrait-ish tiles: a phone screenshot at this size is still recognisable, and three of
- * them fit a phone's width without the row having to scroll.
+ * Small enough that a row of five fits above the keyboard without stealing the writing
+ * surface, large enough to tell two screens of the same app apart.
  */
-private val THUMBNAIL_WIDTH: Dp = 96.dp
-private val THUMBNAIL_HEIGHT: Dp = 160.dp
+private val THUMBNAIL_WIDTH: Dp = 54.dp
+private val THUMBNAIL_HEIGHT: Dp = 96.dp
 
 @Composable
 private fun ErrorBanner(message: String) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
             .clip(RoundedCornerShape(10.dp))
             .background(Color(0x1FFF9800))
             .padding(12.dp),

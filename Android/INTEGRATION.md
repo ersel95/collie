@@ -127,9 +127,12 @@ lists reports by four fields, and Firestore's web SDK cannot fetch a subset of a
 anything left inside is downloaded on every list load. Cloud Storage would be the natural home
 for the images, but it needs a paid plan, so it is deliberately not used.
 
-A report carries **0 to 5 images**: the capture taken at shake time, plus anything the tester
-attaches in the form from the system photo picker (which needs no permission — Collie never
-raises one). `screenshotCount` and the numbered ids are one contract: the panel switches
+A report carries **0 to 5 images**: the capture taken at shake time, plus whatever the tester
+adds in the form — from the system photo picker (which needs no permission; Collie never raises
+one), or in **screenshot mode**, where the form steps aside so they can walk back through the
+app; one tap on the shutter takes the picture and returns to the report. Every image also
+leaves a `collie` entry in the log stream at the moment it was taken ("Screenshot 2 captured"),
+so the analyst can place each picture on the timeline instead of guessing. `screenshotCount` and the numbered ids are one contract: the panel switches
 shapes on the count and then reads exactly `_0 … _<count-1>`, so writing one without the other
 hides every image, silently. The count is how many documents were **actually written**, so a
 report whose third image failed says `2` and carries a `screenshotError` explaining the third.

@@ -102,6 +102,21 @@ changes:
   tell "never asked" from "declined" outside an Activity, so there is no `notDetermined` here
   where iOS has one. Reading a grant is not reading the data behind it: no coordinate, no photo,
   no PII.
+- **Screenshot mode leaves the app navigable.** The form is *finished* on the way in and
+  created again on the way out, so the draft (`CollieUi.draft`) — the sentence, the name and
+  the images already attached — lives outside the activity, next to `pendingScreenshot` and
+  for the same reason. The controls are **two wrap-content views**, a bar at the top and a
+  shutter bottom-right, attached to whichever activity is in front: a full-screen overlay
+  would take every touch and freeze the app the tester came to photograph. They are
+  re-attached on `onActivityResumed` because the tester walks between activities, and hidden
+  for a frame before each capture — unlike iOS, where the controls live in a window above the
+  one being rendered, here they are inside the hierarchy `PixelCopy` reads.
+- **Every image leaves a marker in the log stream** (`CollieScreenshotEvent`): a `collie`
+  entry at the moment it was taken, numbered by its position in the report as sent. Deleted
+  images produce no marker, and a gallery image says "attached", not "captured". Same wording
+  as iOS — one panel reads both.
+- **The tester's name is asked once, in a dialog on the first Send**, and the dialog explains
+  why: a name demanded with no reason given gets answered "a".
 - **Screenshots: count and id travel together.** A report carries 0 to 5 images — the
   shake-time capture plus whatever the tester attaches. `screenshotCount` on the report
   document and the `_<index>`-suffixed ids in `collie_report_screenshots` are ONE contract

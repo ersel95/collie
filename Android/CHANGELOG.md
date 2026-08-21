@@ -6,6 +6,31 @@ Android ships on its own version line (`android-*` tags); the iOS changelog is
 ## 0.7.0 — 2026-08-21
 
 ### Added
+- **Screenshot mode**, and the report form rebuilt around it — the Android half of iOS
+  1.18.0/1.18.1. A bug is rarely one screen, and the shake happens where the tester *noticed*
+  it, often two screens after the one an analyst needs. **Screenshot** in the form hands the
+  app back: a bar across the top says the mode is on and returns to the report, a shutter sits
+  in the bottom-right corner, and everything between them belongs to the host app. One tap
+  takes the picture and comes straight back, so the tester sees what they attached rather than
+  a counter in the corner.
+
+  The controls are two wrap-content views rather than one full-screen overlay — a full-screen
+  view would swallow every touch and freeze the app being photographed — re-attached as the
+  tester moves between activities, and hidden for a frame before each capture so they cannot
+  appear in the picture.
+
+  The form itself is now one title and one writing surface, with the evidence riding above the
+  keyboard: thumbnails, **Screenshot** and **Upload**. Nothing about the report is at risk
+  during the trip into the mode: the sentence, the name and the images live in `CollieUi.draft`,
+  outside the activity, which is finished on the way in and created again on the way out.
+
+- **Every screenshot leaves a marker in the log stream** (`CollieScreenshotEvent`): a `collie`
+  entry at the instant it was taken — "Screenshot 2 captured" — merged into the stream at its
+  chronological position. Five pictures taken minutes apart were otherwise a row of thumbnails
+  with no place in a timeline stamped to the second. A deleted image leaves no marker, and one
+  picked from the gallery says "attached", not "captured". `BugReportService.sendReport` gains
+  `screenshotEvents:`, with a default so existing call sites keep compiling.
+
 - **A report can carry up to five screenshots** — the Android half of iOS 1.18.0, same
   feature, same document shape, same ceiling. One picture was the whole evidence a tester
   could attach, and a bug rarely lives on one screen.
@@ -29,6 +54,12 @@ Android ships on its own version line (`android-*` tags); the iOS changelog is
   new build. `BugReportService.maxScreenshots` is the stricter of the two.
 
 ### Changed
+- **The tester's name is asked in a dialog on the first Send, with a reason.** It used to be a
+  placeholder above the description — "Your name (asked only once)" — which says what to type
+  and not one word about why. The dialog explains it: reports from every test device land in one
+  list, and the name is what says which one this came from. Answer it and the send carries
+  straight on.
+
 - **Firestore: one document per image, numbered.** A report's images are written to
   `collie_report_screenshots/<reportId>_0 … _<n-1>` and the report document gains
   `screenshotCount`. The two are one contract with the panel: it switches shapes on the

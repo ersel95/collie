@@ -8,6 +8,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.core.view.WindowCompat
 import com.collie.Collie
 import com.collie.CollieDeviceIdentity
 import com.collie.CollieSubmitOutcome
@@ -16,14 +17,15 @@ import kotlinx.coroutines.launch
 /**
  * Hosts the report form and the markup editor.
  *
- * Its own activity rather than an overlay on the host's: the form owns the keyboard, the
- * back gesture and the window insets while it is up, and none of that can be borrowed from
- * a host activity without fighting it. The banner, which must leave the app usable
- * underneath, is the one piece that stays an overlay.
+ * Its own activity rather than an overlay on the host's: the form owns the keyboard, the back
+ * gesture and the window insets while it is up, and none of that can be borrowed from a host
+ * activity without fighting it. The banner, which must leave the app usable underneath, and
+ * screenshot mode, which must leave it *navigable*, are the pieces that stay overlays.
  *
- * The screenshot travels through [CollieUi.pendingScreenshot] rather than the intent: a
- * full-resolution bitmap is far past the binder transaction limit, and an intent extra that
- * large crashes the app it was meant to diagnose.
+ * The draft travels through [CollieUi.draft] rather than the intent: a full-resolution bitmap
+ * is far past the binder transaction limit, and an intent extra that large crashes the app it
+ * was meant to diagnose. That indirection is also what lets this activity be finished and
+ * created again around a trip into screenshot mode without losing what the tester wrote.
  */
 internal class CollieReportActivity : ComponentActivity() {
 
@@ -37,9 +39,11 @@ internal class CollieReportActivity : ComponentActivity() {
             return
         }
 
-        // The shake-time capture is the report's first image; the tester can add more from
-        // the system photo picker inside the form.
-        val screenshots = listOfNotNull(CollieUi.pendingScreenshot)
+        // The attachment bar has to sit on top of the keyboard, which means this window lays
+        // out behind the system bars and Compose applies the insets itself (`imePadding`).
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+
+        val draft = CollieUi.draft
         val maxScreenshots = service.maxScreenshots
         val requiresName = !CollieDeviceIdentity.hasStoredName(this)
         val hasLogoTapHandler = CollieUi.logoTapHandler != null
@@ -51,19 +55,23 @@ internal class CollieReportActivity : ComponentActivity() {
             val scope = rememberCoroutineScope()
 
             BugReportScreen(
-                screenshots = screenshots,
+                draft = draft,
                 maxScreenshots = maxScreenshots,
                 requiresName = requiresName,
                 hasLogoTapHandler = hasLogoTapHandler,
                 state = state,
-                onSubmit = { whatHappened, testerName, images ->
+                // Kept up to date on the way out to screenshot mode, so the form can be
+                // rebuilt from it when the tester comes back.
+                onDraftChanged = { CollieUi.draft = it },
+                onSubmit = { submitted ->
+                    CollieUi.draft = submitted
                     state = SubmitState.Sending
                     scope.launch {
                         val outcome = BugReportComposer.send(
                             context = this@CollieReportActivity,
-                            whatHappened = whatHappened,
-                            testerName = testerName,
-                            screenshots = images,
+                            whatHappened = submitted.whatHappened.trim(),
+                            testerName = submitted.testerName.trim().takeIf { it.isNotEmpty() },
+                            shots = submitted.shots,
                         )
                         when (outcome) {
                             is CollieSubmitOutcome.Sent -> close(ReportOutcome.Sent(outcome.reportId))
@@ -80,7 +88,15 @@ internal class CollieReportActivity : ComponentActivity() {
     }
 
     private fun close(outcome: ReportOutcome) {
-        CollieUi.pendingScreenshot = null
+        // Screenshot mode is the one outcome that does NOT end the flow: the form goes away
+        // but the draft stays, and the tester comes back to it.
+        if (outcome is ReportOutcome.CaptureScreenshots) {
+            finish()
+            CollieUi.enterScreenshotMode()
+            return
+        }
+
+        CollieUi.endReportFlow()
         finish()
 
         when (outcome) {
@@ -94,6 +110,7 @@ internal class CollieReportActivity : ComponentActivity() {
                 CollieUi.showToast("Queued — will be sent once a connection is available")
 
             is ReportOutcome.SwitchTool -> CollieUi.handOffToOtherTool()
+            is ReportOutcome.CaptureScreenshots -> Unit // handled above
         }
     }
 }

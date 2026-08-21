@@ -10,9 +10,14 @@ downstream has to know which platform it came from.
 Tester shakes the device
   → ShakeDetector fires; the screen is captured (FLAG_SECURE windows are respected)
   → Banner: "Spotted a problem? Want to share it?"  (skipped when asksBeforeReporting = false)
-  → [Yes] → Form: "What happened?" (+ name on first use)
-  → Tap a screenshot → markup opens: circle the problem, Done
-  → [+] attaches up to 5 images in all, from the photo picker (no permission needed)
+  → [Yes] → Form: "What happened?" — the whole page is the field, the evidence
+            sits on the keyboard
+  → First Send on this device: a dialog asks the tester's name, and says why
+  → Tap a thumbnail → markup opens: circle the problem, Done
+  → [Screenshot] → the form steps aside: walk the app, tap the shutter on the
+                   screen worth reporting → straight back to the report
+                   (repeat until 5 images in all)
+  → [Upload] → the same 5 slots, filled from the photo picker (no permission needed)
   → Backend: POST <reportsPath>  (multipart: report JSON + one part per screenshot,
                                   x-collie-api-key)
   → Success: "Report sent" · Transient error: disk queue + automatic retry with backoff

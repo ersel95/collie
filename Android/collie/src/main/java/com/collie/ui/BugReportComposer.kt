@@ -23,14 +23,17 @@ internal object BugReportComposer {
     /**
      * Sends the report.
      *
-     * @param screenshots In the order the form holds them; the transport keeps that order,
-     *   so it is the order the analyst sees.
+     * @param shots In the order the form holds them; the transport keeps that order, so it is
+     *   the order the analyst sees. Each one carries its own capture event, which is why they
+     *   travel as pairs rather than as two lists: an image that fails to encode must take its
+     *   marker with it, or the stream announces "screenshot 3 captured" beside two pictures
+     *   and sends the analyst looking for one that never arrived.
      */
     suspend fun send(
         context: Context,
         whatHappened: String,
         testerName: String?,
-        screenshots: List<Bitmap>,
+        shots: List<BugReportShot>,
     ): CollieSubmitOutcome {
         val service = Collie.bugReportService
             ?: return CollieSubmitOutcome.Rejected("Collie is not configured")
@@ -39,9 +42,10 @@ internal object BugReportComposer {
         // attaching a fifth must not shrink the first four. The form already stops at the
         // limit; capping again here means a caller that does not (a host driving the service
         // directly) cannot exceed what the panel displays.
-        val jpegs = withContext(Dispatchers.Default) {
-            screenshots.take(service.maxScreenshots).mapNotNull {
-                encodeJpeg(it, service.screenshotJpegQuality, service.maxScreenshotBytes)
+        val encoded = withContext(Dispatchers.Default) {
+            shots.take(service.maxScreenshots).mapNotNull { shot ->
+                encodeJpeg(shot.bitmap, service.screenshotJpegQuality, service.maxScreenshotBytes)
+                    ?.let { it to shot.event }
             }
         }
 
@@ -53,7 +57,8 @@ internal object BugReportComposer {
         return service.sendReport(
             whatHappened = whatHappened,
             testerName = testerName,
-            screenshotsJpeg = jpegs,
+            screenshotsJpeg = encoded.map { it.first },
+            screenshotEvents = encoded.map { it.second },
             identity = identity,
             telemetry = telemetry,
         )

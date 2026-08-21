@@ -6,12 +6,16 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
 import android.widget.FrameLayout
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.ViewCompositionStrategy
 import com.collie.Collie
+import com.collie.CollieConfiguration
+import com.collie.CollieScreenshotEvent
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.android.awaitFrame
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -41,9 +45,33 @@ internal object CollieUi {
     private var autoDismissJob: Job? = null
     private val scope: CoroutineScope = MainScope()
 
+    /**
+     * What the tester has entered so far, handed to the report activity and handed back when
+     * it leaves for screenshot mode.
+     *
+     * It lives here, not in the activity, because the flow spans more than one screen: the
+     * form is *finished* on the way into screenshot mode and created again on the way out. A
+     * reporter that loses the sentence when you go and photograph the bug gets used once.
+     * (It also has to travel outside the intent — a full-resolution bitmap is far past the
+     * binder transaction limit, which is why `pendingScreenshot` was already here.)
+     */
+    @Volatile
+    internal var draft: BugReportDraft = BugReportDraft()
+
     /** The screenshot captured at shake time, handed to the report activity. */
     @Volatile
     internal var pendingScreenshot: Bitmap? = null
+
+    /** The two screenshot-mode controls, while that mode is up. */
+    private var screenshotBar: ComposeView? = null
+    private var screenshotShutter: ComposeView? = null
+
+    /**
+     * Whether screenshot mode is on. Survives activity changes on purpose: the whole point is
+     * that the tester navigates the host app, so the controls have to follow them from one
+     * screen to the next.
+     */
+    private var inScreenshotMode = false
 
     /**
      * Handler for taps on the Collie logo in the report screen's top bar (set via
@@ -76,10 +104,16 @@ internal object CollieUi {
                 } else if (activatesOnShake()) {
                     shakeDetector.start(activity)
                 }
+                // Screenshot mode follows the tester: they came here to walk the app, and the
+                // controls are attached to whichever activity is in front.
+                if (inScreenshotMode && activity !is CollieReportActivity) {
+                    attachScreenshotControls(activity)
+                }
             }
 
             override fun onActivityPaused(activity: Activity) {
                 dismissBanner()
+                detachScreenshotControls()
                 shakeDetector.stop()
             }
 
@@ -131,8 +165,23 @@ internal object CollieUi {
         if (activity is CollieReportActivity || activity.isFinishing) return
 
         scope.launch {
-            // Capture the screen before any Collie UI appears.
-            pendingScreenshot = ScreenCapture.capture(activity)
+            // Capture the screen before any Collie UI appears. This first image is the
+            // report's screenshot 1; the tester adds the rest from the form.
+            val captured = ScreenCapture.capture(activity)
+            pendingScreenshot = captured
+            draft = BugReportDraft(
+                shots = listOfNotNull(
+                    captured?.let {
+                        BugReportShot(
+                            bitmap = it,
+                            event = CollieScreenshotEvent(
+                                epochMillis = System.currentTimeMillis(),
+                                source = CollieScreenshotEvent.Source.CAPTURED,
+                            ),
+                        )
+                    },
+                ),
+            )
             if (askFirst) showBanner(activity) else openReportScreen(activity)
         }
     }
@@ -183,7 +232,134 @@ internal object CollieUi {
         activity.startActivity(Intent(activity, CollieReportActivity::class.java))
     }
 
+    // MARK: - Screenshot mode
+
+    /**
+     * Hands the app back to the tester with two controls on top of it: a bar that returns to
+     * the report, and a shutter that photographs whatever is on screen.
+     *
+     * The form is finished but the flow is not — [draft] holds the sentence, the name and the
+     * images already attached, so nothing about the report can be lost while the tester walks
+     * around the app.
+     */
+    internal fun enterScreenshotMode() {
+        inScreenshotMode = true
+        currentActivity?.get()
+            ?.takeIf { it !is CollieReportActivity && !it.isFinishing }
+            ?.let(::attachScreenshotControls)
+    }
+
+    private fun leaveScreenshotMode() {
+        inScreenshotMode = false
+        detachScreenshotControls()
+        currentActivity?.get()?.let(::openReportScreen)
+    }
+
+    private fun captureInScreenshotMode() {
+        val activity = currentActivity?.get() ?: return
+        val limit = Collie.bugReportService?.maxScreenshots ?: return
+        if (draft.shots.size >= limit) return
+
+        scope.launch {
+            // The controls are part of the host's view hierarchy here — unlike iOS, where they
+            // live in a window above the one being rendered — so they would appear in the
+            // picture. Hide them, let a frame go by so the compositor has caught up (PixelCopy
+            // reads what is actually on screen), then capture.
+            setScreenshotControlsVisible(false)
+            awaitFrame()
+            awaitFrame()
+            val bitmap = ScreenCapture.capture(activity)
+            setScreenshotControlsVisible(true)
+
+            if (bitmap == null) {
+                Collie.bugReportService?.diag("Screenshot mode: nothing could be rendered.")
+                return@launch
+            }
+            draft = draft.copy(
+                shots = draft.shots + BugReportShot(
+                    bitmap = bitmap,
+                    event = CollieScreenshotEvent(
+                        epochMillis = System.currentTimeMillis(),
+                        source = CollieScreenshotEvent.Source.CAPTURED,
+                    ),
+                ),
+            )
+            // One tap, one picture, straight back to the report. Staying in the mode would
+            // mean the tester's only confirmation is a counter in the corner — they would have
+            // no idea *what* they just attached until they left.
+            leaveScreenshotMode()
+        }
+    }
+
+    /**
+     * Two wrap-content views rather than one full-screen overlay: everything between them
+     * belongs to the host app, which is what lets the tester navigate to the screen they came
+     * to photograph. A full-screen view would swallow every touch.
+     */
+    private fun attachScreenshotControls(activity: Activity) {
+        detachScreenshotControls()
+        val content = activity.findViewById<ViewGroup>(android.R.id.content) ?: return
+        val limit = Collie.bugReportService?.maxScreenshots ?: CollieConfiguration.MAX_SCREENSHOTS_LIMIT
+
+        val bar = ComposeView(activity).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent { ScreenshotModeBar(onExit = ::leaveScreenshotMode) }
+        }
+        content.addView(
+            bar,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP,
+            ),
+        )
+
+        val shutter = ComposeView(activity).apply {
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
+            setContent {
+                ScreenshotModeShutter(
+                    count = draft.shots.size,
+                    limit = limit,
+                    onCapture = ::captureInScreenshotMode,
+                )
+            }
+        }
+        content.addView(
+            shutter,
+            FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.BOTTOM or Gravity.END,
+            ),
+        )
+
+        screenshotBar = bar
+        screenshotShutter = shutter
+    }
+
+    private fun detachScreenshotControls() {
+        listOfNotNull(screenshotBar, screenshotShutter).forEach { view ->
+            (view.parent as? ViewGroup)?.removeView(view)
+        }
+        screenshotBar = null
+        screenshotShutter = null
+    }
+
+    private fun setScreenshotControlsVisible(visible: Boolean) {
+        val visibility = if (visible) View.VISIBLE else View.INVISIBLE
+        screenshotBar?.visibility = visibility
+        screenshotShutter?.visibility = visibility
+    }
+
     // MARK: - Outcome
+
+    /** Called when the report flow ends, however it ended. */
+    internal fun endReportFlow() {
+        inScreenshotMode = false
+        detachScreenshotControls()
+        pendingScreenshot = null
+        draft = BugReportDraft()
+    }
 
     /** Shown once the report screen closes; runs on the activity that is up by then. */
     internal fun showToast(message: String) {

@@ -221,11 +221,16 @@ public class BugReportService internal constructor(
      *   `null`, the stored name is used.
      * @param screenshotsJpeg The screenshots pre-compressed to JPEG (binary), in the order
      *   the tester arranged them. Empty when the report carries no image.
+     * @param screenshotEvents When each of those images was taken, in the same order. Each one
+     *   becomes a `collie` marker in the log stream, so the analyst can see where in the
+     *   timeline a picture was taken instead of guessing. Empty is allowed — a host driving
+     *   the service directly need not track it.
      */
     public suspend fun sendReport(
         whatHappened: String,
         testerName: String?,
         screenshotsJpeg: List<ByteArray>,
+        screenshotEvents: List<CollieScreenshotEvent> = emptyList(),
         identity: CollieDeviceIdentity,
         telemetry: CollieTelemetry? = null,
     ): CollieSubmitOutcome {
@@ -248,9 +253,17 @@ public class BugReportService internal constructor(
         // timeline shows where this session began, where it resumed after a long background,
         // and where the previous report was filed.
         val hostEntries = configuration.logSnapshotProvider?.invoke().orEmpty()
+        // The screenshot markers travel with the session markers: same category, same
+        // chronological insertion, so "screenshot 2 captured" lands between the two log lines
+        // it happened between rather than at the end of the stream.
+        //
+        // Trimmed to the images actually being sent — an event without an image would
+        // advertise a picture the analyst cannot open.
+        val markers = CollieSessionTracker.markerEntries(stamp) +
+            CollieScreenshotEvent.markerEntries(screenshotEvents.take(screenshotsJpeg.size))
         val entries = CollieSessionTracker.merge(
             hostEntries = hostEntries,
-            markers = CollieSessionTracker.markerEntries(stamp),
+            markers = markers,
         )
 
         val context = ReportEnvelopeBuilder.ReportContext(
